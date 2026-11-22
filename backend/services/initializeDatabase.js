@@ -49,6 +49,39 @@ async function initializeDatabase() {
         ON UPDATE CURRENT_TIMESTAMP
     ) ENGINE=InnoDB
   `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS booking_request (
+      request_id CHAR(36) PRIMARY KEY,
+      submission_id VARCHAR(190) NOT NULL UNIQUE,
+      payload_hash CHAR(64) NOT NULL,
+      customer_name VARCHAR(150) NOT NULL,
+      phone_number VARCHAR(30) NOT NULL,
+      email VARCHAR(190) NULL,
+      product_id VARCHAR(20) NOT NULL,
+      product_name VARCHAR(150) NOT NULL,
+      quantity INT NOT NULL,
+      items_json JSON NULL,
+      requested_date DATE NOT NULL,
+      notes TEXT NULL,
+      delivery_address TEXT NULL,
+      status VARCHAR(30) NOT NULL DEFAULT 'Pending',
+      accepted_order_id VARCHAR(20) NULL,
+      reviewed_by_owner_id CHAR(36) NULL,
+      reviewed_at TIMESTAMP NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_booking_request_status_created (status, created_at),
+      CONSTRAINT chk_booking_request_quantity CHECK (quantity > 0)
+    ) ENGINE=InnoDB
+  `);
+  const bookingRequestColumns = [
+    ['items_json', 'JSON NULL'],
+    ['accepted_order_id', 'VARCHAR(20) NULL'],
+    ['reviewed_by_owner_id', 'CHAR(36) NULL'],
+    ['reviewed_at', 'TIMESTAMP NULL']
+  ];
+  for (const [column, definition] of bookingRequestColumns) {
+    await ensureColumn('booking_request', column, definition);
+  }
   const columns = [
     ['customer', 'created_by_owner_id', 'CHAR(36) NULL'],
     ['product_variant', 'product_type', "VARCHAR(30) NOT NULL DEFAULT 'Souvenir'"],

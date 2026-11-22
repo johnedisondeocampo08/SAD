@@ -256,6 +256,30 @@ CREATE TABLE IF NOT EXISTS workspace_state (
         ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;
 
+-- Public-form booking requests remain separate from confirmed customer orders.
+CREATE TABLE IF NOT EXISTS booking_request (
+    request_id CHAR(36) PRIMARY KEY,
+    submission_id VARCHAR(190) NOT NULL UNIQUE,
+    payload_hash CHAR(64) NOT NULL,
+    customer_name VARCHAR(150) NOT NULL,
+    phone_number VARCHAR(30) NOT NULL,
+    email VARCHAR(190),
+    product_id VARCHAR(20) NOT NULL,
+    product_name VARCHAR(150) NOT NULL,
+    quantity INT NOT NULL,
+    items_json JSON,
+    requested_date DATE NOT NULL,
+    notes TEXT,
+    delivery_address TEXT,
+    status VARCHAR(30) NOT NULL DEFAULT 'Pending',
+    accepted_order_id VARCHAR(20),
+    reviewed_by_owner_id CHAR(36),
+    reviewed_at TIMESTAMP NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_booking_request_status_created (status, created_at),
+    CONSTRAINT chk_booking_request_quantity CHECK (quantity > 0)
+) ENGINE=InnoDB;
+
 -- =============================================
 -- VERIFY DATABASE TABLES
 -- =============================================

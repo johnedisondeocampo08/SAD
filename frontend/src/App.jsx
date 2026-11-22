@@ -251,6 +251,13 @@ function AccessPage({ setupRequired, onAuthenticated }) {
 function WorkspaceApp({ owner, onSignOut }) {
   const [data, setData] = useState(initialState);
   const [active, setActive] = useState('Overview');
+  const [ordersView, setOrdersView] = useState('orders');
+  const [bookingRequests, setBookingRequests] = useState([]);
+  const [bookingRequestsLoading, setBookingRequestsLoading] = useState(false);
+  const [bookingRequestsLoaded, setBookingRequestsLoaded] = useState(false);
+  const [bookingRequestsError, setBookingRequestsError] = useState('');
+  const [bookingRequestsRefresh, setBookingRequestsRefresh] = useState(0);
+  const [bookingActionId, setBookingActionId] = useState('');
   const [modal, setModal] = useState('');
   const [notice, setNotice] = useState('');
   const [search, setSearch] = useState('');
@@ -267,6 +274,7 @@ function WorkspaceApp({ owner, onSignOut }) {
   const [saveError, setSaveError] = useState('');
   const saveQueue = useRef(Promise.resolve());
   const workspaceVersion = useRef(0);
+  const workspaceMutationInProgress = useRef(false);
   const ownerName = owner.display_name;
 
   useEffect(() => {
@@ -307,6 +315,7 @@ function WorkspaceApp({ owner, onSignOut }) {
   useEffect(() => {
     if (!loaded || loadError) return undefined;
     const timer = setTimeout(() => {
+      if (workspaceMutationInProgress.current) return;
       saveQueue.current = saveQueue.current
         .catch(() => { })
         .then(() => apiRequest('/api/workspace', { method: 'PUT', body: JSON.stringify({ data, version: workspaceVersion.current }) }))
@@ -324,6 +333,36 @@ function WorkspaceApp({ owner, onSignOut }) {
     const timer = setTimeout(() => setNotice(''), 3500);
     return () => clearTimeout(timer);
   }, [notice]);
+
+  useEffect(() => {
+    if (active !== 'Orders') return undefined;
+    let activeRequest = true;
+    const fetchRequests = () => {
+      apiRequest('/api/booking-requests')
+        .then((result) => {
+          if (activeRequest) {
+            setBookingRequests(result.data);
+            setBookingRequestsError('');
+            setBookingRequestsLoaded(true);
+          }
+        })
+        .catch((error) => {
+          if (activeRequest) {
+            setBookingRequestsError(error.message);
+            setBookingRequestsLoaded(true);
+          }
+        })
+        .finally(() => {
+          if (activeRequest) setBookingRequestsLoading(false);
+        });
+    };
+    fetchRequests();
+    const interval = setInterval(fetchRequests, 30000);
+    return () => {
+      activeRequest = false;
+      clearInterval(interval);
+    };
+  }, [active, bookingRequestsRefresh]);
 
   const lowStock = data.materials.filter((material) => material.active && material.stock <= material.threshold);
   const outstanding = data.orders.filter((order) => order.status !== 'Cancelled').reduce((sum, order) => sum + Math.max(0, order.total - data.payments.filter((payment) => payment.orderId === order.id).reduce((total, payment) => total + Number(payment.amount), 0)), 0);
@@ -637,6 +676,56 @@ function WorkspaceApp({ owner, onSignOut }) {
     window.print();
   }
 
+  async function reviewBookingRequest(request, decision) {
+    setBookingActionId(request.requestId);
+    setBookingRequestsError('');
+    const accepting = decision === 'Accepted';
+    if (accepting) workspaceMutationInProgress.current = true;
+    try {
+      if (accepting) {
+        await saveQueue.current.catch(() => {});
+        const saved = await apiRequest('/api/workspace', {
+          method: 'PUT',
+          body: JSON.stringify({ data, version: workspaceVersion.current }),
+        });
+        workspaceVersion.current = saved.version;
+      }
+      const result = await apiRequest(`/api/booking-requests/${encodeURIComponent(request.requestId)}/review`, {
+        method: 'PATCH',
+        body: JSON.stringify({ decision }),
+      });
+      setBookingRequests((current) => current.map((entry) => (
+        entry.requestId === request.requestId
+          ? { ...entry, status: result.status, acceptedOrderId: result.orderId || null }
+          : entry
+      )));
+      if (result.workspace) {
+        workspaceVersion.current = result.version;
+        const workspace = { ...initialState, ...result.workspace };
+        workspace.expenses = workspace.expenses.map((expense) => ({
+          ...expense,
+          startMonth: expense.startMonth || expense.date?.slice(0, 7),
+          paidMonths: Array.isArray(expense.paidMonths) ? expense.paidMonths : [],
+        }));
+        setData(workspace);
+      }
+      flash(decision === 'Accepted'
+        ? `Booking accepted and added as order ${result.orderId}.`
+        : 'Booking declined.');
+    } catch (error) {
+      setBookingRequestsError(error.message);
+    } finally {
+      if (accepting) workspaceMutationInProgress.current = false;
+      setBookingActionId('');
+    }
+  }
+
+  function refreshBookingRequests() {
+    setBookingRequestsLoading(true);
+    setBookingRequestsRefresh((value) => value + 1);
+  }
+
+  const pendingBookingCount = bookingRequests.filter((request) => request.status === 'Pending').length;
   const pageTitle = active === 'Overview' ? 'Good morning, studio owners' : active;
   const filteredCustomers = data.customers.filter((customer) => `${customer.name} ${customer.phone} ${customer.email}`.toLowerCase().includes(search.toLowerCase()));
   const filteredOrders = data.orders.filter((order) => `${order.id} ${order.customer} ${order.status}`.toLowerCase().includes(search.toLowerCase()));
@@ -687,7 +776,7 @@ function WorkspaceApp({ owner, onSignOut }) {
           <div className="page-heading">
             <div><p className="eyebrow">{active === 'Overview' ? 'YOUR LITTLE BUSINESS, AT A GLANCE' : 'SIMULA STUDIO  /  MANAGEMENT'}</p><h1>{pageTitle}</h1><p className="page-subtitle">{pageSubtitle(active)}</p></div>
             {active === 'Overview' && <button className="button button-primary" onClick={() => setModal('order')}><Icon name="plus" /> New order</button>}
-            {active === 'Orders' && <button className="button button-primary" onClick={() => setModal('order')}><Icon name="plus" /> Create order</button>}
+            {active === 'Orders' && <div className="orders-header-actions"><button className="button button-secondary booking-requests-toggle" type="button" onClick={() => setOrdersView((view) => view === 'bookings' ? 'orders' : 'bookings')}><span>Booking requests</span>{pendingBookingCount > 0 && <span className="booking-count-badge">{pendingBookingCount}</span>}</button><button className="button button-primary" onClick={() => setModal('order')}><Icon name="plus" /> Create order</button></div>}
             {active === 'Customers' && <button className="button button-primary" onClick={() => setModal('customer')}><Icon name="plus" /> Add customer</button>}
             {active === 'Products' && <button className="button button-primary" onClick={() => setModal('product')}><Icon name="plus" /> Add product</button>}
             {active === 'Production' && <button className="button button-primary" onClick={() => setModal('production')}><Icon name="plus" /> Record production</button>}
@@ -700,7 +789,7 @@ function WorkspaceApp({ owner, onSignOut }) {
 
           {active === 'Overview' && <Dashboard data={data} lowStock={lowStock} outstanding={outstanding} setActive={setActive} setModal={setModal} />}
           {active === 'Customers' && <CustomersPage customers={filteredCustomers} search={search} setSearch={setSearch} onPrint={printRecord} onEdit={(customer) => { setSelectedCustomer(customer); setModal('customer'); }} />}
-          {active === 'Orders' && <OrdersPage orders={filteredOrders} data={data} search={search} setSearch={setSearch} onUpdate={updateOrderStatus} onEdit={(order) => { setSelectedOrder(order); setModal('order'); }} onPrint={(order) => { setSelectedOrder(order); setModal('slip'); }} />}
+          {active === 'Orders' && <OrdersPage orders={filteredOrders} data={data} search={search} setSearch={setSearch} onUpdate={updateOrderStatus} onEdit={(order) => { setSelectedOrder(order); setModal('order'); }} onPrint={(order) => { setSelectedOrder(order); setModal('slip'); }} requests={bookingRequests} requestsLoading={!bookingRequestsLoaded || bookingRequestsLoading} requestsError={bookingRequestsError} showBookings={ordersView === 'bookings'} onRefreshBookings={refreshBookingRequests} onReviewBooking={reviewBookingRequest} actionId={bookingActionId} />}
           {active === 'Products' && <ProductsPage products={data.products} materials={data.materials} onRecipe={updateRecipe} />}
           {active === 'Inventory' && <InventoryPage materials={data.materials} movements={data.movements} lowStock={lowStock} products={data.products} batches={data.batches} orders={data.orders} onAdd={() => { setSelectedMaterial(null); setModal('material'); }} onRestock={(material) => { setSelectedMaterial(material); setModal('stock'); }} />}
           {active === 'Production' && <ProductionPage batches={data.batches} orders={data.orders} products={data.products} materials={data.materials} onCreate={(product) => { setSelectedProduct(product); setModal('production'); }} />}
@@ -793,6 +882,59 @@ function QuickAction({ icon, label, onClick }) {
   return <button className="quick-action" onClick={onClick}><span className="quick-icon"><Icon name={icon} /></span><span>{label}</span><span className="quick-arrow">↗</span></button>;
 }
 
+function BookingRequestsPage({ requests, loading, error, actionId, onRefresh, onReview }) {
+  const [statusFilter, setStatusFilter] = useState('Pending');
+  const visibleRequests = requests.filter((request) => request.status === statusFilter);
+  const statusCounts = {
+    Pending: requests.filter((request) => request.status === 'Pending').length,
+    Accepted: requests.filter((request) => request.status === 'Accepted').length,
+    Declined: requests.filter((request) => request.status === 'Declined').length,
+  };
+  return <section className="panel data-panel">
+    <div className="panel-heading">
+      <div>
+        <h3>Booking requests</h3>
+        <p>Review requests here. Accepting creates an order using current product prices; it does not reserve stock or record payment.</p>
+      </div>
+      <button className="button button-secondary" type="button" onClick={onRefresh} disabled={loading}>
+        {loading ? 'Refreshing…' : 'Refresh'}
+      </button>
+    </div>
+    <div className="booking-request-tabs" role="tablist" aria-label="Booking request status">
+      {Object.entries(statusCounts).map(([status, count]) => <button
+        className={`booking-request-tab ${statusFilter === status ? 'active' : ''}`}
+        type="button"
+        role="tab"
+        aria-selected={statusFilter === status}
+        key={status}
+        onClick={() => setStatusFilter(status)}
+      >{status}<span>{count}</span></button>)}
+    </div>
+    {error ? <div className="booking-request-error" role="alert">{error}</div>
+      : loading && !requests.length ? <div className="empty-state"><p>Loading booking requests…</p></div>
+        : visibleRequests.length ? <div className="table-scroll">
+          <table>
+            <thead><tr><th>SUBMITTED</th><th>CUSTOMER</th><th>CONTACT</th><th>BOOKING</th><th>REQUESTED DATE</th><th>NOTES / ADDRESS</th>{statusFilter === 'Pending' ? <th>ACTION</th> : <th>RESULT</th>}</tr></thead>
+            <tbody>{visibleRequests.map((request) => <tr key={request.requestId}>
+              <td>{request.createdAt ? new Date(request.createdAt).toLocaleString('en-PH') : '—'}</td>
+              <td className="strong-cell">{request.customerName}</td>
+              <td>{request.phoneNumber}{request.email && <small className="table-sub">{request.email}</small>}</td>
+              <td className="strong-cell">{(Array.isArray(request.items) && request.items.length
+                ? request.items
+                : [{ productName: request.productName || 'Product details unavailable', quantity: request.quantity || '—' }]
+              ).map((item) => `${item.quantity} × ${item.productName}`).join(', ')}</td>
+              <td>{dateLabel(request.requestedDate)}</td>
+              <td>{request.notes || '—'}{request.deliveryAddress && <small className="table-sub">{request.deliveryAddress}</small>}</td>
+              <td>{statusFilter === 'Pending' ? <div className="table-actions booking-actions">
+                <button className="button button-primary" type="button" disabled={actionId === request.requestId} onClick={() => onReview(request, 'Accepted')}>{actionId === request.requestId ? 'Saving…' : 'Accept'}</button>
+                <button className="button button-secondary" type="button" disabled={actionId === request.requestId} onClick={() => onReview(request, 'Declined')}>Decline</button>
+              </div> : request.status === 'Accepted' ? <span className="booking-result">Order {request.acceptedOrderId || 'created'}</span> : <span className="status-badge status-cancelled"><i />Declined</span>}</td>
+            </tr>)}</tbody>
+          </table>
+        </div> : <EmptyState title={`No ${statusFilter.toLowerCase()} bookings`} detail={statusFilter === 'Pending' ? 'New form submissions will appear here for review.' : `There are no ${statusFilter.toLowerCase()} bookings yet.`} />}
+  </section>;
+}
+
 function CustomersPage({ customers, search, setSearch, onPrint, onEdit }) {
   return <><div className="toolbar"><SearchInput value={search} onChange={setSearch} placeholder="Search name, phone, or email" /><button className="button button-secondary" onClick={onPrint}><Icon name="print" /> Print records</button></div>
     <section className="panel data-panel"><div className="panel-heading"><div><h3>Customer book</h3><p>{customers.length} {customers.length === 1 ? 'customer' : 'customers'} who make it all possible.</p></div></div>
@@ -800,9 +942,12 @@ function CustomersPage({ customers, search, setSearch, onPrint, onEdit }) {
   </>;
 }
 
-function OrdersPage({ orders, data, search, setSearch, onUpdate, onEdit, onPrint }) {
+function OrdersPage({ orders, data, search, setSearch, onUpdate, onEdit, onPrint, requests, requestsLoading, requestsError, showBookings, actionId, onRefreshBookings, onReviewBooking }) {
   const [filter, setFilter] = useState('All orders');
   const visible = orders.filter((order) => filter === 'All orders' || order.status === filter);
+  if (showBookings) {
+    return <BookingRequestsPage requests={requests} loading={requestsLoading} error={requestsError} actionId={actionId} onRefresh={onRefreshBookings} onReview={onReviewBooking} />;
+  }
   return <><div className="toolbar"><SearchInput value={search} onChange={setSearch} placeholder="Search order or customer" /><select className="select-control" value={filter} onChange={(e) => setFilter(e.target.value)}><option>All orders</option>{['Pending', 'In production', 'Delivered', 'Cancelled'].map((status) => <option key={status}>{status}</option>)}</select></div>
     <section className="panel data-panel"><div className="panel-heading"><div><h3>Order book</h3><p>{visible.length} orders · shipping is shown separately from item sales.</p></div></div>
       {visible.length ? <div className="table-scroll"><table><thead><tr><th>ORDER</th><th>CUSTOMER</th><th>ORDER DATE</th><th>DUE DATE</th><th>STATUS</th><th>PAYMENT</th><th>TOTAL</th><th>ACTIONS</th></tr></thead><tbody>{visible.map((order) => {

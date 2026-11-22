@@ -3,6 +3,7 @@ const express = require('express');
 const customerRoutes = require('./routes/customerRoutes');
 const authRoutes = require('./routes/authRoutes');
 const workspaceRoutes = require('./routes/workspaceRoutes');
+const bookingRequestRoutes = require('./routes/bookingRequestRoutes');
 const initializeDatabase = require('./services/initializeDatabase');
 
 const app = express();
@@ -22,6 +23,7 @@ app.get('/api/health', (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/workspace', workspaceRoutes);
 app.use('/api/customers', customerRoutes);
+app.use('/api/booking-requests', bookingRequestRoutes);
 
 initializeDatabase()
   .then(() => {

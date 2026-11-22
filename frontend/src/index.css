@@ -420,6 +420,26 @@ a:hover {
   border-color: #d5cadb;
   background: #fbf9fc;
 }
+.orders-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.booking-requests-toggle {
+  min-height: 38px;
+}
+.booking-count-badge {
+  display: inline-grid;
+  min-width: 17px;
+  height: 17px;
+  place-items: center;
+  padding: 0 4px;
+  border-radius: 9px;
+  background: #faeee7;
+  color: #a76043;
+  font-size: 9px;
+  font-weight: 700;
+}
 .icon-svg {
   display: block;
 }
@@ -1093,6 +1113,57 @@ tbody tr:hover {
 }
 .data-panel {
   margin-bottom: 14px;
+}
+.booking-request-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 0 17px 12px;
+  border-bottom: 1px solid #f0ecef;
+}
+.booking-request-tab {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #77707a;
+  font-size: 10px;
+  font-weight: 600;
+}
+.booking-request-tab.active {
+  border-color: #e8e0eb;
+  background: #f7f3f8;
+  color: #554560;
+}
+.booking-request-tab span {
+  color: #9c939f;
+  font-size: 9px;
+}
+.booking-actions {
+  gap: 6px;
+}
+.booking-actions .button {
+  min-height: 30px;
+  padding: 0 9px;
+  font-size: 9px;
+}
+.booking-result {
+  color: #5f806b;
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.booking-request-error {
+  margin: 0 17px 17px;
+  padding: 12px 14px;
+  border: 1px solid #f1d4d0;
+  border-radius: 7px;
+  background: #fff5f3;
+  color: #9c463d;
+  font-size: 12px;
 }
 .empty-state {
   display: flex;
@@ -2470,6 +2541,16 @@ tbody tr:hover {
     padding: 0 10px;
     font-size: 9px;
   }
+  .orders-header-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 5px;
+  }
+  .orders-header-actions .button {
+    min-height: 36px;
+    padding: 0 9px;
+    font-size: 9px;
+  }
   .welcome-banner {
     min-height: 220px;
     padding: 25px 22px;
@@ -2801,6 +2882,11 @@ tbody tr:hover {
   .page-heading > .button {
     gap: 5px;
     padding: 0 8px;
+  }
+  .orders-header-actions .button {
+    min-height: 32px;
+    padding: 0 7px;
+    font-size: 8px;
   }
   .banner-copy {
     max-width: 72%;

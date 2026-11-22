@@ -3,12 +3,14 @@ const FIELD_MAP = {
   phoneNumber: 'Phone number',
   email: 'Email address',
   notes: 'Booking notes or personalization details',
-  deliveryAddress: 'Delivery address',
+  deliveryAddress: 'Delivery Address',
 };
 const BOOKING_ITEM_FIELDS = [
   { product: 'Product 1', quantity: 'Quantity 1' },
   { product: 'Product 2', quantity: 'Quantity 2' },
   { product: 'Product 3', quantity: 'Quantity 3' },
+  { product: 'Product 4', quantity: 'Quantity 4' },
+  { product: 'Product 5', quantity: 'Quantity 5' },
 ];
 
 function onFormSubmit(e) {

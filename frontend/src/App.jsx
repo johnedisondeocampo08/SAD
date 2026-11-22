@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 const today = new Date().toISOString().slice(0, 10);
+function BrandLogo({ decorative = false }) {
+  return <img className="brand-mark" src="/image.png" alt={decorative ? '' : 'Simula Studio'} />;
+}
+
 const nav = [
   ['Overview', '⌂'], ['Orders', '▤'], ['Customers', '♙'], ['Products', '✳'],
   ['Inventory', '▦'], ['Production', '⚒'], ['Payments', '↗'], ['Expenses', '−'],
@@ -154,11 +158,11 @@ async function apiRequest(url, options = {}) {
 }
 
 function AccessLoading() {
-  return <div className="access-screen"><div className="access-card access-loading"><span className="brand-mark">s<span>.</span></span><h1>Opening your studio</h1><p>Connecting to your saved business records…</p></div></div>;
+  return <div className="access-screen"><div className="access-card access-loading"><BrandLogo /><h1>Opening your studio</h1><p>Connecting to your saved business records…</p></div></div>;
 }
 
 function AccessUnavailable({ message, onRetry }) {
-  return <div className="access-screen"><div className="access-card"><div className="access-brand"><span className="brand-mark">s<span>.</span></span><span><strong>simula studio</strong><small>OWNER WORKSPACE</small></span></div><div className="access-flower">✿</div><h1>We can’t reach your studio</h1><p>{message || 'Check that the studio server is running and try again.'}</p><button className="button button-primary access-submit" onClick={onRetry}>Try again</button></div></div>;
+  return <div className="access-screen"><div className="access-card"><div className="access-brand"><BrandLogo decorative /><span><strong>simula studio</strong><small>OWNER WORKSPACE</small></span></div><div className="access-flower">✿</div><h1>We can’t reach your studio</h1><p>{message || 'Check that the studio server is running and try again.'}</p><button className="button button-primary access-submit" onClick={onRetry}>Try again</button></div></div>;
 }
 
 function AccessPage({ setupRequired, onAuthenticated }) {
@@ -226,7 +230,7 @@ function AccessPage({ setupRequired, onAuthenticated }) {
   }
 
   return <div className="access-screen"><section className={`access-card ${view === 'setup' ? 'setup-card' : ''}`}>
-    <div className="access-brand"><span className="brand-mark">s<span>.</span></span><span><strong>simula studio</strong><small>OWNER WORKSPACE</small></span></div>
+    <div className="access-brand"><BrandLogo decorative /><span><strong>simula studio</strong><small>OWNER WORKSPACE</small></span></div>
     <div className="access-flower">✿</div>
     {view === 'setup' ? <>
       <p className="eyebrow">A ONE-TIME START</p><h1>Welcome to your studio.</h1><p className="access-intro">Create the two owner accounts for you and your co-owner. This setup closes as soon as both accounts are saved.</p>
@@ -737,7 +741,7 @@ function WorkspaceApp({ owner, onSignOut }) {
     <div className="app-shell">
       <aside className="sidebar">
         <a className="brand" href="#overview" onClick={() => setActive('Overview')}>
-          <span className="brand-mark">s<span>.</span></span>
+          <BrandLogo decorative />
           <span><strong>simula studio</strong><small>OWNER WORKSPACE</small></span>
         </a>
         <div className="nav-caption">WORKSPACE</div>
@@ -763,7 +767,7 @@ function WorkspaceApp({ owner, onSignOut }) {
 
       <main className="main-area">
         <header className="topbar">
-          <div className="mobile-brand"><span className="brand-mark">s<span>.</span></span><strong>simula studio</strong></div>
+          <div className="mobile-brand"><BrandLogo decorative /><strong>simula studio</strong></div>
           <div className="breadcrumb">Studio <span>/</span> <b>{active}</b></div>
           <div className="top-actions">
             <span className="today-label">{dateLabel(today)}</span>
@@ -788,7 +792,7 @@ function WorkspaceApp({ owner, onSignOut }) {
           {notice && <div className="toast" role="status"><span>✓</span>{notice}<button onClick={() => setNotice('')} aria-label="Dismiss notification">×</button></div>}
 
           {active === 'Overview' && <Dashboard data={data} lowStock={lowStock} outstanding={outstanding} setActive={setActive} setModal={setModal} />}
-          {active === 'Customers' && <CustomersPage customers={filteredCustomers} search={search} setSearch={setSearch} onPrint={printRecord} onEdit={(customer) => { setSelectedCustomer(customer); setModal('customer'); }} />}
+          {active === 'Customers' && <CustomersPage customers={filteredCustomers} orders={data.orders} search={search} setSearch={setSearch} onPrint={printRecord} onEdit={(customer) => { setSelectedCustomer(customer); setModal('customer'); }} />}
           {active === 'Orders' && <OrdersPage orders={filteredOrders} data={data} search={search} setSearch={setSearch} onUpdate={updateOrderStatus} onEdit={(order) => { setSelectedOrder(order); setModal('order'); }} onPrint={(order) => { setSelectedOrder(order); setModal('slip'); }} requests={bookingRequests} requestsLoading={!bookingRequestsLoaded || bookingRequestsLoading} requestsError={bookingRequestsError} showBookings={ordersView === 'bookings'} onRefreshBookings={refreshBookingRequests} onReviewBooking={reviewBookingRequest} actionId={bookingActionId} />}
           {active === 'Products' && <ProductsPage products={data.products} materials={data.materials} onRecipe={updateRecipe} />}
           {active === 'Inventory' && <InventoryPage materials={data.materials} movements={data.movements} lowStock={lowStock} products={data.products} batches={data.batches} orders={data.orders} onAdd={() => { setSelectedMaterial(null); setModal('material'); }} onRestock={(material) => { setSelectedMaterial(material); setModal('stock'); }} />}
@@ -884,61 +888,125 @@ function QuickAction({ icon, label, onClick }) {
 
 function BookingRequestsPage({ requests, loading, error, actionId, onRefresh, onReview }) {
   const [statusFilter, setStatusFilter] = useState('Pending');
+  const [selectedRequest, setSelectedRequest] = useState(null);
   const visibleRequests = requests.filter((request) => request.status === statusFilter);
   const statusCounts = {
     Pending: requests.filter((request) => request.status === 'Pending').length,
     Accepted: requests.filter((request) => request.status === 'Accepted').length,
     Declined: requests.filter((request) => request.status === 'Declined').length,
   };
-  return <section className="panel data-panel">
-    <div className="panel-heading">
-      <div>
-        <h3>Booking requests</h3>
-        <p>Review requests here. Accepting creates an order using current product prices; it does not reserve stock or record payment.</p>
+  useEffect(() => {
+    if (!selectedRequest) return undefined;
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') setSelectedRequest(null);
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [selectedRequest]);
+
+  const selectedItems = selectedRequest
+    ? Array.isArray(selectedRequest.items) && selectedRequest.items.length
+      ? selectedRequest.items
+      : [{ productName: selectedRequest.productName || 'Product details unavailable', quantity: selectedRequest.quantity || '—' }]
+    : [];
+
+  return <>
+    <section className="panel data-panel">
+      <div className="panel-heading">
+        <div>
+          <h3>Booking requests</h3>
+          <p>Review requests here. Accepting creates an order using current product prices; it does not reserve stock or record payment.</p>
+        </div>
+        <button className="button button-secondary" type="button" onClick={onRefresh} disabled={loading}>
+          {loading ? 'Refreshing…' : 'Refresh'}
+        </button>
       </div>
-      <button className="button button-secondary" type="button" onClick={onRefresh} disabled={loading}>
-        {loading ? 'Refreshing…' : 'Refresh'}
-      </button>
-    </div>
-    <div className="booking-request-tabs" role="tablist" aria-label="Booking request status">
-      {Object.entries(statusCounts).map(([status, count]) => <button
-        className={`booking-request-tab ${statusFilter === status ? 'active' : ''}`}
-        type="button"
-        role="tab"
-        aria-selected={statusFilter === status}
-        key={status}
-        onClick={() => setStatusFilter(status)}
-      >{status}<span>{count}</span></button>)}
-    </div>
-    {error ? <div className="booking-request-error" role="alert">{error}</div>
-      : loading && !requests.length ? <div className="empty-state"><p>Loading booking requests…</p></div>
-        : visibleRequests.length ? <div className="table-scroll">
-          <table>
-            <thead><tr><th>SUBMITTED</th><th>CUSTOMER</th><th>CONTACT</th><th>BOOKING</th><th>REQUESTED DATE</th><th>NOTES / ADDRESS</th>{statusFilter === 'Pending' ? <th>ACTION</th> : <th>RESULT</th>}</tr></thead>
-            <tbody>{visibleRequests.map((request) => <tr key={request.requestId}>
-              <td>{request.createdAt ? new Date(request.createdAt).toLocaleString('en-PH') : '—'}</td>
-              <td className="strong-cell">{request.customerName}</td>
-              <td>{request.phoneNumber}{request.email && <small className="table-sub">{request.email}</small>}</td>
-              <td className="strong-cell">{(Array.isArray(request.items) && request.items.length
-                ? request.items
-                : [{ productName: request.productName || 'Product details unavailable', quantity: request.quantity || '—' }]
-              ).map((item) => `${item.quantity} × ${item.productName}`).join(', ')}</td>
-              <td>{dateLabel(request.requestedDate)}</td>
-              <td>{request.notes || '—'}{request.deliveryAddress && <small className="table-sub">{request.deliveryAddress}</small>}</td>
-              <td>{statusFilter === 'Pending' ? <div className="table-actions booking-actions">
-                <button className="button button-primary" type="button" disabled={actionId === request.requestId} onClick={() => onReview(request, 'Accepted')}>{actionId === request.requestId ? 'Saving…' : 'Accept'}</button>
-                <button className="button button-secondary" type="button" disabled={actionId === request.requestId} onClick={() => onReview(request, 'Declined')}>Decline</button>
-              </div> : request.status === 'Accepted' ? <span className="booking-result">Order {request.acceptedOrderId || 'created'}</span> : <span className="status-badge status-cancelled"><i />Declined</span>}</td>
-            </tr>)}</tbody>
-          </table>
-        </div> : <EmptyState title={`No ${statusFilter.toLowerCase()} bookings`} detail={statusFilter === 'Pending' ? 'New form submissions will appear here for review.' : `There are no ${statusFilter.toLowerCase()} bookings yet.`} />}
-  </section>;
+      <div className="booking-request-tabs" role="tablist" aria-label="Booking request status">
+        {Object.entries(statusCounts).map(([status, count]) => <button
+          className={`booking-request-tab ${statusFilter === status ? 'active' : ''}`}
+          type="button"
+          role="tab"
+          aria-selected={statusFilter === status}
+          key={status}
+          onClick={() => setStatusFilter(status)}
+        >{status}<span>{count}</span></button>)}
+      </div>
+      {error ? <div className="booking-request-error" role="alert">{error}</div>
+        : loading && !requests.length ? <div className="empty-state"><p>Loading booking requests…</p></div>
+          : visibleRequests.length ? <div className="table-scroll">
+            <table className="booking-requests-table">
+              <colgroup><col /><col /><col /><col /><col /><col /><col /><col /></colgroup>
+              <thead><tr><th>SUBMITTED</th><th>CUSTOMER</th><th>CONTACT</th><th>ORDERS</th><th>REQUESTED DATE</th><th>NOTES</th><th>ADDRESS</th>{statusFilter === 'Pending' ? <th>ACTION</th> : <th>RESULT</th>}</tr></thead>
+              <tbody>{visibleRequests.map((request) => <tr key={request.requestId}>
+                <td>{request.createdAt ? new Date(request.createdAt).toLocaleString('en-PH') : '—'}</td>
+                <td className="strong-cell">{request.customerName}</td>
+                <td>{request.phoneNumber}{request.email && <small className="table-sub">{request.email}</small>}</td>
+                <td className="booking-orders-cell"><button className="button button-secondary booking-view-items" type="button" aria-label={`View all order items for ${request.customerName}`} onClick={() => setSelectedRequest(request)}>View All</button></td>
+                <td>{dateLabel(request.requestedDate)}</td>
+                <td>{request.notes || '—'}</td>
+                <td>{request.deliveryAddress || '—'}</td>
+                <td>{statusFilter === 'Pending' ? <div className="table-actions booking-actions">
+                  <button className="button button-primary" type="button" disabled={actionId === request.requestId} onClick={() => onReview(request, 'Accepted')}>{actionId === request.requestId ? 'Saving…' : 'Accept'}</button>
+                  <button className="button button-secondary" type="button" disabled={actionId === request.requestId} onClick={() => onReview(request, 'Declined')}>Decline</button>
+                </div> : request.status === 'Accepted' ? <span className="booking-result">Order {request.acceptedOrderId || 'created'}</span> : <span className="status-badge status-cancelled"><i />Declined</span>}</td>
+              </tr>)}</tbody>
+            </table>
+          </div> : <EmptyState title={`No ${statusFilter.toLowerCase()} bookings`} detail={statusFilter === 'Pending' ? 'New form submissions will appear here for review.' : `There are no ${statusFilter.toLowerCase()} bookings yet.`} />}
+    </section>
+    {selectedRequest && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedRequest(null); }}>
+      <section className="modal-card booking-items-modal" role="dialog" aria-modal="true" aria-labelledby="booking-items-title">
+        <div className="modal-header">
+          <div><p className="eyebrow">BOOKING ITEMS</p><h2 id="booking-items-title">Order items</h2></div>
+          <button className="modal-close" type="button" onClick={() => setSelectedRequest(null)} aria-label="Close order items">×</button>
+        </div>
+        <div className="booking-item-list">
+          {selectedItems.map((item, index) => <div className="booking-item-row" key={`${item.productId || item.productName}-${index}`}>
+            <span>{item.productName || item.name || 'Product details unavailable'}</span>
+            <strong>{item.quantity ?? '—'} ×</strong>
+          </div>)}
+        </div>
+      </section>
+    </div>}
+  </>;
 }
 
-function CustomersPage({ customers, search, setSearch, onPrint, onEdit }) {
-  return <><div className="toolbar"><SearchInput value={search} onChange={setSearch} placeholder="Search name, phone, or email" /><button className="button button-secondary" onClick={onPrint}><Icon name="print" /> Print records</button></div>
+function CustomersPage({ customers, orders, search, setSearch, onPrint, onEdit }) {
+  const [selectedCustomer, setSelectedCustomer] = useState(null);
+  const customerOrders = selectedCustomer
+    ? orders.filter((order) => (
+      order.customerId === selectedCustomer.id
+      || (!order.customerId && order.customer === selectedCustomer.name)
+    ))
+    : [];
+
+  useEffect(() => {
+    if (!selectedCustomer) return undefined;
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') setSelectedCustomer(null);
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [selectedCustomer]);
+
+  return <>
+    <div className="toolbar"><SearchInput value={search} onChange={setSearch} placeholder="Search name, phone, or email" /><button className="button button-secondary" onClick={onPrint}><Icon name="print" /> Print records</button></div>
     <section className="panel data-panel"><div className="panel-heading"><div><h3>Customer book</h3><p>{customers.length} {customers.length === 1 ? 'customer' : 'customers'} who make it all possible.</p></div></div>
-      {customers.length ? <div className="table-scroll"><table><thead><tr><th>NAME</th><th>CONTACT</th><th>EMAIL</th><th>ADDRESS</th><th>NOTES</th><th>ACTION</th></tr></thead><tbody>{customers.map((c) => <tr key={c.id}><td className="strong-cell">{c.name}</td><td>{c.phone || '—'}</td><td>{c.email || '—'}</td><td>{c.address || '—'}</td><td>{c.notes || '—'}</td><td><button className="text-link" onClick={() => onEdit(c)}>Edit</button></td></tr>)}</tbody></table></div> : <EmptyState title={search ? 'No matching customers' : 'Your customer book is waiting'} detail={search ? 'Try another name, phone number, or email.' : 'Add your first customer profile to keep their details close.'} />}</section>
+      {customers.length ? <div className="table-scroll"><table><thead><tr><th>NAME</th><th>CONTACT</th><th>EMAIL</th><th>ADDRESS</th><th>NOTES</th><th>ORDERS</th><th>ACTION</th></tr></thead><tbody>{customers.map((customer) => {
+        const orderCount = orders.filter((order) => (
+          order.customerId === customer.id
+          || (!order.customerId && order.customer === customer.name)
+        )).length;
+        return <tr key={customer.id}><td className="strong-cell">{customer.name}</td><td>{customer.phone || '—'}</td><td>{customer.email || '—'}</td><td>{customer.address || '—'}</td><td>{customer.notes || '—'}</td><td><div className="customer-orders-control"><span className="customer-orders-count">{orderCount}</span><button className="button button-secondary customer-orders-view" type="button" disabled={!orderCount} aria-label={`View all ${orderCount} orders for ${customer.name}`} onClick={() => setSelectedCustomer(customer)}>View All</button></div></td><td><button className="text-link" onClick={() => onEdit(customer)}>Edit</button></td></tr>;
+      })}</tbody></table></div> : <EmptyState title={search ? 'No matching customers' : 'Your customer book is waiting'} detail={search ? 'Try another name, phone number, or email.' : 'Add your first customer profile to keep their details close.'} />}</section>
+    {selectedCustomer && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedCustomer(null); }}>
+      <section className="modal-card customer-orders-modal" role="dialog" aria-modal="true" aria-labelledby="customer-orders-title">
+        <div className="modal-header">
+          <div><p className="eyebrow">CUSTOMER ORDERS</p><h2 id="customer-orders-title">{selectedCustomer.name}</h2><p className="customer-orders-modal-summary">{customerOrders.length} {customerOrders.length === 1 ? 'order' : 'orders'}</p></div>
+          <button className="modal-close" type="button" aria-label="Close customer orders" onClick={() => setSelectedCustomer(null)}>×</button>
+        </div>
+        {customerOrders.length ? <div className="table-scroll customer-orders-table-scroll"><table className="customer-orders-table"><thead><tr><th>ORDER</th><th>ORDER DATE</th><th>DUE DATE</th><th>ITEMS</th><th>STATUS</th><th>PAYMENT</th><th>TOTAL</th></tr></thead><tbody>{customerOrders.map((order) => <tr key={order.id}><td className="strong-cell">{order.id}</td><td>{dateLabel(order.date)}</td><td>{dateLabel(order.dueDate)}</td><td className="customer-orders-items">{order.items.map((item, index) => <span key={`${item.productId || item.name}-${index}`}>{item.quantity} × {item.name}</span>)}</td><td><Status value={order.status} /></td><td><Status value={order.paymentStatus || 'Unpaid'} /></td><td className="strong-cell">{money(order.total)}</td></tr>)}</tbody></table></div> : <EmptyState title="No orders yet" detail="Orders for this customer will appear here." />}
+      </section>
+    </div>}
   </>;
 }
 
@@ -1090,7 +1158,7 @@ function ReportsPage({ month, setMonth, basis, setBasis, orders, candles, souven
       </div>
     </section>
     <section className="report-controls panel"><div><label htmlFor="report-month">REPORTING MONTH</label><input id="report-month" type="month" value={month} onChange={(e) => setMonth(e.target.value)} /></div><div><label htmlFor="report-basis">REPORTING BASIS</label><select id="report-basis" value={basis} onChange={(e) => setBasis(e.target.value)}><option value="order">Order date</option><option value="due">Due date</option></select></div><div className="report-basis-note"><span>ⓘ</span><p>Income uses <strong>{basis === 'order' ? 'order date' : 'due date'}</strong>. Shipping is excluded from all product totals.</p></div></section>
-    <section className="report-paper"><div className="report-header"><div><div className="report-brand"><span className="brand-mark">s<span>.</span></span><span><strong>simula studio</strong><small>HANDMADE WITH HEART</small></span></div><p className="eyebrow">MONTHLY BUSINESS REPORT</p><h2>{new Date(`${month}-01T00:00:00`).toLocaleDateString('en-PH', { month: 'long', year: 'numeric' })}</h2><p>Reporting basis: <strong>{basis === 'order' ? 'Order date' : 'Due date'}</strong></p></div><span className="report-stamp">STUDIO<br />RECORDS</span></div>
+    <section className="report-paper"><div className="report-header"><div><div className="report-brand"><BrandLogo decorative /><span><strong>simula studio</strong><small>HANDMADE WITH HEART</small></span></div><p className="eyebrow">MONTHLY BUSINESS REPORT</p><h2>{new Date(`${month}-01T00:00:00`).toLocaleDateString('en-PH', { month: 'long', year: 'numeric' })}</h2><p>Reporting basis: <strong>{basis === 'order' ? 'Order date' : 'Due date'}</strong></p></div><span className="report-stamp">STUDIO<br />RECORDS</span></div>
       <div className="report-rule" /><div className="report-line"><span>Scented candles</span><small>{orders.filter((order) => order.items.some((item) => item.type === 'Candle')).length} orders</small><strong>{money(candles)}</strong></div><div className="report-line"><span>Souvenirs</span><small>{orders.filter((order) => order.items.some((item) => item.type === 'Souvenir')).length} orders</small><strong>{money(souvenirs)}</strong></div><div className="report-line report-total"><span>Total product income</span><strong>{money(total)}</strong></div>
       <div className="report-footnote"><span>✓</span> Shipping fees are excluded. Income is based on order item quantities × selling price.</div>
       <div className="report-expenses"><span>Business expenses recorded this month</span><strong>{money(expenses)}</strong></div>
@@ -1199,7 +1267,7 @@ function Modal({ type, data, selectedOrder, selectedCustomer, selectedMaterial, 
   const productionShortage = productionDeductions.find(({ material, needed }) => !material || material.stock < needed);
   const orderItemTotal = (form.items || []).reduce((sum, item) => sum + Number(item.quantity || 0) * Number(item.price || 0), 0);
   const title = { customer: selectedCustomer ? 'Update customer profile' : 'Add a customer', product: 'Add a product', material: selectedMaterial ? 'Edit material' : 'Add a material', order: selectedOrder ? 'Update order' : 'Create an order', stock: 'Update material stock', production: 'Create finished products', payment: 'Record a payment', expense: selectedExpense ? 'Edit expense' : 'Add an expense', slip: 'Order slip' }[type];
-  if (type === 'slip' && selectedOrder) return <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}><section className="modal-card slip-card"><button className="modal-close" onClick={onClose} aria-label="Close">×</button><div className="slip-brand"><span className="brand-mark">s<span>.</span></span><span><strong>simula studio</strong><small>HANDMADE WITH HEART</small></span></div><p className="eyebrow">ORDER SLIP · {selectedOrder.id}</p><h2>{selectedOrder.customer}</h2><p>Order date {dateLabel(selectedOrder.date)} · Due {dateLabel(selectedOrder.dueDate)}</p><div className="slip-items">{selectedOrder.items.map((item) => <div key={item.productId}><span>{item.quantity} × {item.name}</span><strong>{money(item.quantity * item.price)}</strong></div>)}</div><div className="slip-items"><div><span>Shipping</span><strong>{money(selectedOrder.shipping)}</strong></div></div><div className="slip-total"><span>Total due</span><strong>{money(selectedOrder.total)}</strong></div><p className="slip-thanks">Thank you for supporting our little studio ✿</p><button className="button button-primary modal-submit" onClick={() => onSave({})}><Icon name="print" /> Print order slip</button></section></div>;
+  if (type === 'slip' && selectedOrder) return <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}><section className="modal-card slip-card"><button className="modal-close" onClick={onClose} aria-label="Close">×</button><div className="slip-brand"><BrandLogo decorative /><span><strong>simula studio</strong><small>HANDMADE WITH HEART</small></span></div><p className="eyebrow">ORDER SLIP · {selectedOrder.id}</p><h2>{selectedOrder.customer}</h2><p>Order date {dateLabel(selectedOrder.date)} · Due {dateLabel(selectedOrder.dueDate)}</p><div className="slip-items">{selectedOrder.items.map((item) => <div key={item.productId}><span>{item.quantity} × {item.name}</span><strong>{money(item.quantity * item.price)}</strong></div>)}</div><div className="slip-items"><div><span>Shipping</span><strong>{money(selectedOrder.shipping)}</strong></div></div><div className="slip-total"><span>Total due</span><strong>{money(selectedOrder.total)}</strong></div><p className="slip-thanks">Thank you for supporting our little studio ✿</p><button className="button button-primary modal-submit" onClick={() => onSave({})}><Icon name="print" /> Print order slip</button></section></div>;
   return <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div className="modal-header"><div><p className="eyebrow">SIMULA STUDIO</p><h2 id="modal-title">{title}</h2></div><button className="modal-close" onClick={onClose} aria-label="Close">×</button></div>
     {error && <div className="form-error" role="alert">{error}</div>}
     {type === 'customer' && <div className="form-grid"><Field label="Full name" required><input autoFocus value={form.name} maxLength="150" onChange={(e) => set('name', e.target.value)} placeholder="e.g. Alex Santos" /></Field><Field label="Contact number"><input value={form.phone} maxLength="20" onChange={(e) => set('phone', e.target.value)} placeholder="+63 912 345 6789" /></Field><Field label="Email address"><input type="email" value={form.email} onChange={(e) => set('email', e.target.value)} placeholder="alex@email.com" /></Field><Field label="Address"><input value={form.address} onChange={(e) => set('address', e.target.value)} placeholder="City or delivery address" /></Field><Field label="Notes" wide><textarea rows="3" value={form.notes} onChange={(e) => set('notes', e.target.value)} placeholder="Preferences, reminders, or little details..." /></Field></div>}

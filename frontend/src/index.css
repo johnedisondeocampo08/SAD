@@ -78,22 +78,11 @@ a:hover {
   padding: 0 8px;
 }
 .brand-mark {
-  display: grid;
+  display: block;
   width: 38px;
   height: 38px;
   flex: 0 0 38px;
-  place-content: center;
-  border-radius: 13px 13px 13px 5px;
-  background: #65566e;
-  color: #fff;
-  font-family: "Playfair Display", serif;
-  font-size: 23px;
-  font-weight: 600;
-  letter-spacing: -3px;
-  padding-right: 4px;
-}
-.brand-mark span {
-  color: #efc4a4;
+  object-fit: contain;
 }
 .brand strong,
 .report-brand strong,
@@ -1120,6 +1109,61 @@ tbody tr:hover {
   padding: 0 17px 12px;
   border-bottom: 1px solid #f0ecef;
 }
+.booking-requests-table {
+  width: 100%;
+  min-width: 1000px;
+  table-layout: fixed;
+}
+.booking-requests-table col {
+  width: 12.5%;
+}
+.booking-requests-table th,
+.booking-requests-table td {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.booking-requests-table td {
+  vertical-align: top;
+}
+.booking-requests-table th:nth-child(4),
+.booking-requests-table .booking-orders-cell {
+  text-align: center;
+}
+.booking-view-items {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 8px;
+  font-size: 9px;
+}
+.booking-items-modal {
+  width: min(100%, 560px);
+}
+.booking-item-list {
+  display: grid;
+  gap: 8px;
+}
+.booking-item-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 11px 12px;
+  border: 1px solid #eee9ec;
+  border-radius: 7px;
+  background: #fdfcfb;
+}
+.booking-item-row > span {
+  min-width: 0;
+  color: #51465a;
+  font-size: 11px;
+}
+.booking-item-row > strong {
+  flex: 0 0 auto;
+  color: #766f79;
+  font-size: 10px;
+}
 .booking-request-tab {
   display: inline-flex;
   min-height: 30px;
@@ -1916,6 +1960,47 @@ tbody tr:hover {
   border-radius: 12px;
   background: #fff;
   box-shadow: 0 22px 65px #241d2c30;
+}
+.customer-orders-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.customer-orders-count {
+  min-width: 12px;
+  color: #77717c;
+  font-size: 10px;
+  text-align: center;
+}
+.customer-orders-view {
+  min-height: 29px;
+  padding: 0 9px;
+  font-size: 9px;
+}
+.customer-orders-modal {
+  width: min(100%, 980px);
+}
+.customer-orders-modal-summary {
+  margin: 5px 0 0;
+  color: #8d858e;
+  font-size: 11px;
+}
+.customer-orders-table-scroll {
+  max-height: 58vh;
+}
+.customer-orders-table td {
+  vertical-align: top;
+}
+.customer-orders-items {
+  min-width: 150px;
+  white-space: normal;
+}
+.customer-orders-items span {
+  display: block;
+  white-space: normal;
+}
+.customer-orders-items span + span {
+  margin-top: 3px;
 }
 .modal-header {
   display: flex;

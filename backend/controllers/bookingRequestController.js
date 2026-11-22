@@ -94,9 +94,9 @@ async function createBookingRequest(request, response) {
     const requestedItems = Array.isArray(body.items) && body.items.length
       ? body.items
       : [{ productName: fields.productName.value, quantity: body.quantity }];
-    if (requestedItems.length > 3) {
+    if (requestedItems.length > 5) {
       await connection.rollback();
-      return response.status(400).json({ success: false, message: 'A booking can include at most three products.' });
+      return response.status(400).json({ success: false, message: 'A booking can include at most five products.' });
     }
     const normalizedItems = [];
     for (const [index, item] of requestedItems.entries()) {

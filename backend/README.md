@@ -29,7 +29,7 @@ Send `Authorization: Bearer <BOOKING_API_TOKEN>` and a JSON body with this shape
 }
 ```
 
-Each product name must match an active product in the current workspace. A booking can contain up to three product/quantity items. The date must be `YYYY-MM-DD`; each quantity must be an integer from 1 through 10000. `email`, `notes`, and `deliveryAddress` may be empty. A legacy single-product payload with `productName` and `quantity` is also accepted.
+Each product name must match an active product in the current workspace. A booking can contain up to five product/quantity items. The date must be `YYYY-MM-DD`; each quantity must be an integer from 1 through 10000. `email`, `notes`, and `deliveryAddress` may be empty. A legacy single-product payload with `productName` and `quantity` is also accepted.
 
 The first accepted submission returns HTTP `201` with a request ID and `Pending` status. Repeating the same submission ID and content returns HTTP `200` with `duplicate: true`; reusing that ID with different content returns HTTP `409`.
 

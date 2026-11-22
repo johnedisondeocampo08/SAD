@@ -38,3 +38,7 @@ The first accepted submission returns HTTP `201` with a request ID and `Pending`
 `GET /api/booking-requests` requires the existing owner session cookie and returns booking requests with their item arrays and status, newest first.
 
 `PATCH /api/booking-requests/:requestId/review` also requires the owner session and a JSON body containing `{"decision":"Accepted"}` or `{"decision":"Declined"}`. Accepting atomically creates a normal pending order using current catalog prices, links or creates the customer by email/phone, records the requested date as due date, and marks the request accepted. It does not record payment or reserve stock. Declined requests remain in the request list with their declined status.
+
+## Production deployment
+
+For the fake-data demo, host this API and MySQL in the same Railway project so the database remains private. See the [frontend deployment guide](../frontend/README.md#deploy-a-fake-data-demo-to-vercel-and-railway) for service setup, Vercel API routing, schema import, and environment variables. Never commit real database credentials or the booking token.

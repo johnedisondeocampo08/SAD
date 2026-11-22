@@ -12,6 +12,7 @@ const BOOKING_ITEM_FIELDS = [
   { product: 'Product 4', quantity: 'Quantity 4' },
   { product: 'Product 5', quantity: 'Quantity 5' },
 ];
+const BOOKING_API_URL = 'https://frontend-ivory-one-11.vercel.app/api/booking-requests';
 
 function onFormSubmit(e) {
   if (!e || !e.range) {
@@ -19,14 +20,10 @@ function onFormSubmit(e) {
   }
 
   const properties = PropertiesService.getScriptProperties();
-  const url = properties.getProperty('BOOKING_API_URL');
   const token = properties.getProperty('BOOKING_API_TOKEN');
 
-  if (!url || !token) {
-    throw new Error('Set BOOKING_API_URL and BOOKING_API_TOKEN in Script Properties.');
-  }
-  if (!/^https:\/\/.+\/api\/booking-requests\/?$/i.test(url)) {
-    throw new Error('BOOKING_API_URL must be the public HTTPS booking-requests endpoint.');
+  if (!token) {
+    throw new Error('Set BOOKING_API_TOKEN in Script Properties.');
   }
 
   const sheet = e.range.getSheet();
@@ -90,12 +87,11 @@ function onFormSubmit(e) {
     throw new Error(`Required booking answer is missing: ${missing.join(', ')}.`);
   }
 
-  const response = UrlFetchApp.fetch(url, {
+  const response = UrlFetchApp.fetch(BOOKING_API_URL, {
     method: 'post',
     contentType: 'application/json',
     headers: {
       Authorization: `Bearer ${token}`,
-      'ngrok-skip-browser-warning': 'true',
     },
     payload: JSON.stringify(payload),
     muteHttpExceptions: true,
@@ -106,7 +102,7 @@ function onFormSubmit(e) {
   try {
     result = JSON.parse(response.getContentText());
   } catch {
-    throw new Error(`Booking API returned a non-JSON response (HTTP ${status}). Check the tunnel URL.`);
+    throw new Error(`Cloud booking API returned a non-JSON response (HTTP ${status}). Check the deployed API route.`);
   }
 
   if ((status !== 200 && status !== 201) || result.success !== true) {
@@ -117,13 +113,11 @@ function onFormSubmit(e) {
 
 function checkBookingProperties() {
   const properties = PropertiesService.getScriptProperties();
-  const url = properties.getProperty('BOOKING_API_URL') || '';
   const token = properties.getProperty('BOOKING_API_TOKEN') || '';
 
   Logger.log(JSON.stringify({
-    hasUrl: Boolean(url),
     hasToken: Boolean(token),
-    urlLooksRight: /^https:\/\/.+\/api\/booking-requests\/?$/i.test(url),
+    bookingApiUrl: BOOKING_API_URL,
   }));
 }
 

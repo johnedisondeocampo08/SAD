@@ -4,9 +4,11 @@ The React/Vite owner workspace covers customers, multi-item orders, products and
 
 ## Run locally
 
+Run these commands from the repository root.
+
 1. Configure the database connection in `backend/.env` (`DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, and `DB_NAME`).
 2. For a new database, import `database/schema.sql` to create the business tables.
-3. Start the API: `cd backend` then `node index.js`.
+3. Install API dependencies and start it: `cd backend`, `npm install`, then `npm start`.
 4. In another terminal, start the UI: `cd frontend` then `npm run dev`.
 5. Open the Vite URL. On first run, create exactly two owner accounts. Public sign-up is then closed.
 
@@ -26,3 +28,19 @@ The API creates the owner-session and workspace-state tables and applies increme
 ## Validation
 
 Run `npm run build` and `npm run lint` from `frontend`.
+
+## Deploy a fake-data demo to Vercel and Railway
+
+The frontend is deployed to Vercel, and the Express API and MySQL database run in the same Railway project. The database stays on Railway's private network; the Vercel rewrite keeps browser requests same-origin so owner-session cookies work. This setup is for a non-commercial demo with fake data only. Do not migrate real customer or business data.
+
+Current demo: https://frontend-ivory-one-11.vercel.app/
+
+Railway API: https://simula-studio-api-production.up.railway.app
+
+1. In the Railway project, create a MySQL service and an API service. Set the API's `DB_HOST`, `DB_PORT`, `DB_USER`, and `DB_PASSWORD` to private Railway references from the MySQL service, and set `DB_NAME=simula_studio_db`, `NODE_ENV=production`, and a random `BOOKING_API_TOKEN` of at least 32 characters.
+2. Before starting the API, import `../database/schema.sql`, then import `../database/seed.sql` once into the clean demo database. The seed contains fake sample records and is not idempotent.
+3. Deploy the `backend` directory to the API service. Generate its Railway domain on port `5000`; the backend listens on Railway's `PORT`.
+4. Set the API destination in `vercel.json` to `https://simula-studio-api-production.up.railway.app/api/:path*`. Deploy the `frontend` directory to Vercel with `npx.cmd vercel --prod`. These CLI deployments upload local files and do not require a GitHub push.
+5. For Google Apps Script booking intake, use `backend/google-apps-script/Code.gs` and set `BOOKING_API_TOKEN` in Script Properties to the same secret stored in Railway. The script posts to the deployed Vercel API route and does not need ngrok.
+
+Keep database credentials and the booking token out of Git and chat. Railway trial credits can expire; stop if a provider requests payment or an upgrade. Vercel Hobby and this demo setup are not for commercial use or real customer data.

@@ -203,13 +203,18 @@ CREATE TABLE IF NOT EXISTS expense (
     category VARCHAR(100) NOT NULL,
     description TEXT,
     amount DECIMAL(12,2) NOT NULL,
+    installment_months INT NULL,
+    start_month CHAR(7) NULL,
+    paid_months JSON NULL,
     expense_date DATE NOT NULL,
     payment_method VARCHAR(50),
     receipt_url TEXT,
     created_by_owner_id CHAR(36) NULL,
 
     CONSTRAINT chk_expense_amount
-        CHECK (amount >= 0)
+        CHECK (amount >= 0),
+    CONSTRAINT chk_expense_installment_months
+        CHECK (installment_months IS NULL OR installment_months > 0)
 ) ENGINE=InnoDB;
 
 -- 11. OWNER ACCOUNTS

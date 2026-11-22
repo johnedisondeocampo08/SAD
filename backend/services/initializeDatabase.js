@@ -63,7 +63,10 @@ async function initializeDatabase() {
     ['production_batch', 'created_by_owner_id', 'CHAR(36) NULL'],
     ['production_batch', 'variant_id', 'VARCHAR(20) NULL'],
     ['inventory_movement', 'created_by_owner_id', 'CHAR(36) NULL'],
-    ['expense', 'created_by_owner_id', 'CHAR(36) NULL']
+    ['expense', 'created_by_owner_id', 'CHAR(36) NULL'],
+    ['expense', 'installment_months', 'INT NULL'],
+    ['expense', 'start_month', 'CHAR(7) NULL'],
+    ['expense', 'paid_months', 'JSON NULL']
   ];
   for (const [table, column, definition] of columns) {
     await ensureColumn(table, column, definition);

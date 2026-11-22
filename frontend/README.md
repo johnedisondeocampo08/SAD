@@ -19,6 +19,7 @@ The API creates the owner-session and workspace-state tables and applies increme
 - Workspace saves update the shared JSON snapshot and normalized business tables in one MySQL transaction. Version checks prevent one owner from silently overwriting newer changes from the other owner.
 - Production batches can be made from each product recipe, validate all required material balances, and add finished units to the Products cupboard in Inventory. Existing order-linked batches remain history and do not count as new finished stock.
 - A first payment requires enough finished stock for every order item and reserves those units. Reservations remain unavailable after cancellation. Payments enforce a maximum of two receipts per order.
+- Expense books track monthly payments, editable installment terms, paid months, and the full purchase commitment. Active installments carry into later books until their term is complete; the Time skip action is available after all due items in a book are paid.
 - Reports display their selected order-date or due-date basis and exclude shipping from product income.
 
 ## Validation

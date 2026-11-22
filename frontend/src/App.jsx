@@ -36,6 +36,7 @@ const initialState = {
   orders: [],
   payments: [],
   expenses: [],
+  expenseBookMonth: today.slice(0, 7),
   batches: [],
   movements: [],
 };
@@ -43,6 +44,28 @@ const initialState = {
 const money = (value) => `₱${Number(value || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const idFor = (prefix, items) => `${prefix}-${String(items.length + 1).padStart(3, '0')}`;
 const dateLabel = (value) => value ? new Date(`${value}T00:00:00`).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
+
+function monthIndex(value) {
+  const [year, month] = value.split('-').map(Number);
+  return year * 12 + month - 1;
+}
+
+function nextMonth(value) {
+  const next = monthIndex(value) + 1;
+  return `${Math.floor(next / 12)}-${String(next % 12 + 1).padStart(2, '0')}`;
+}
+
+function expenseIsDueInMonth(expense, month) {
+  const startMonth = expense.startMonth || expense.date?.slice(0, 7);
+  if (!startMonth) return false;
+  const monthOffset = monthIndex(month) - monthIndex(startMonth);
+  const duration = Number(expense.installmentMonths) || 1;
+  return monthOffset >= 0 && monthOffset < duration;
+}
+
+function expenseIsPaidInMonth(expense, month) {
+  return Array.isArray(expense.paidMonths) && expense.paidMonths.includes(month);
+}
 
 function productStock(batches, orders, productId) {
   const produced = batches.filter((batch) => batch.productId === productId).reduce((sum, batch) => sum + Number(batch.quantity), 0);
@@ -235,7 +258,9 @@ function WorkspaceApp({ owner, onSignOut }) {
   const [selectedCustomer, setSelectedCustomer] = useState(null);
   const [selectedMaterial, setSelectedMaterial] = useState(null);
   const [selectedProduct, setSelectedProduct] = useState(null);
+  const [selectedExpense, setSelectedExpense] = useState(null);
   const [month, setMonth] = useState(today.slice(0, 7));
+  const [expenseViewMonth, setExpenseViewMonth] = useState(today.slice(0, 7));
   const [basis, setBasis] = useState('order');
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState('');
@@ -252,6 +277,13 @@ function WorkspaceApp({ owner, onSignOut }) {
         workspaceVersion.current = result.version;
         if (result.data) {
           const workspace = { ...initialState, ...result.data };
+          workspace.expenseBookMonth = workspace.expenseBookMonth || today.slice(0, 7);
+          workspace.expenses = workspace.expenses.map((expense) => ({
+            ...expense,
+            startMonth: expense.startMonth || expense.date?.slice(0, 7),
+            paidMonths: Array.isArray(expense.paidMonths) ? expense.paidMonths : [],
+          }));
+          setExpenseViewMonth(workspace.expenseBookMonth);
           workspace.orders = workspace.orders.map((order) => {
             const paid = workspace.payments.filter((payment) => payment.orderId === order.id).reduce((sum, payment) => sum + Number(payment.amount), 0);
             const isPaid = paid >= Number(order.total);
@@ -295,6 +327,9 @@ function WorkspaceApp({ owner, onSignOut }) {
 
   const lowStock = data.materials.filter((material) => material.active && material.stock <= material.threshold);
   const outstanding = data.orders.filter((order) => order.status !== 'Cancelled').reduce((sum, order) => sum + Math.max(0, order.total - data.payments.filter((payment) => payment.orderId === order.id).reduce((total, payment) => total + Number(payment.amount), 0)), 0);
+  const expenseBookMonth = data.expenseBookMonth || today.slice(0, 7);
+  const currentExpenseBook = data.expenses.filter((expense) => expenseIsDueInMonth(expense, expenseBookMonth));
+  const canSkipExpenseMonth = currentExpenseBook.length > 0 && currentExpenseBook.every((expense) => expenseIsPaidInMonth(expense, expenseBookMonth));
   const monthOrders = data.orders.filter((order) => order.status !== 'Cancelled' && (basis === 'order' ? order.date : order.dueDate || order.date)?.startsWith(month));
   const monthRevenue = monthOrders.reduce((sum, order) => sum + order.items.reduce((lineSum, item) => lineSum + item.quantity * item.price, 0), 0);
   const monthCandles = monthOrders.reduce((sum, order) => sum + order.items.filter((item) => item.type === 'Candle').reduce((lineSum, item) => lineSum + item.quantity * item.price, 0), 0);
@@ -308,13 +343,27 @@ function WorkspaceApp({ owner, onSignOut }) {
     setNotice(message);
   }
 
-  function addCustomer(form) {
+  function createCustomerRecord(form) {
     if (!form.name.trim()) return 'Enter the customer’s full name.';
     if (form.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) return 'Enter a valid email address.';
     if (form.phone && !/^[+()\d\s-]{7,20}$/.test(form.phone)) return 'Enter a valid contact number.';
-    update({ customers: [...data.customers, { ...form, id: idFor('C', data.customers), name: form.name.trim(), createdBy: ownerName }] });
+    return { ...form, id: idFor('C', data.customers), name: form.name.trim(), createdBy: ownerName };
+  }
+
+  function addCustomer(form) {
+    const customer = createCustomerRecord(form);
+    if (typeof customer === 'string') return customer;
+    update({ customers: [...data.customers, customer] });
     flash('Customer profile saved.');
     return '';
+  }
+
+  function addCustomerFromOrder(form) {
+    const customer = createCustomerRecord(form);
+    if (typeof customer === 'string') return { error: customer };
+    update({ customers: [...data.customers, customer] });
+    flash('Customer profile saved and selected for the order.');
+    return { customer };
   }
 
   function updateCustomer(id, form) {
@@ -493,7 +542,9 @@ function WorkspaceApp({ owner, onSignOut }) {
       }
     }
     if (!Number.isFinite(amount) || amount <= 0) return 'Payment must be greater than zero.';
-    if (amount > order.total - alreadyPaid + 0.001) return `Payment exceeds the remaining balance of ${money(order.total - alreadyPaid)}.`;
+    const remaining = Number(order.total) - alreadyPaid;
+    if (existing.length === 1 && Math.abs(amount - remaining) > 0.001) return `The second receipt must be exactly the remaining balance of ${money(remaining)}.`;
+    if (amount > remaining + 0.001) return `Payment exceeds the remaining balance of ${money(remaining)}.`;
     const payment = { ...form, id: idFor('PAY', data.payments), amount, paidAt: new Date().toISOString(), createdBy: ownerName };
     const newPaid = alreadyPaid + amount;
     update({
@@ -511,11 +562,39 @@ function WorkspaceApp({ owner, onSignOut }) {
 
   function recordExpense(form) {
     const amount = Number(form.amount);
-    if (!form.category || !form.description.trim()) return 'Add an expense category and description.';
+    const installmentMonths = form.installmentMonths === '' || form.installmentMonths == null ? null : Number(form.installmentMonths);
+    if (!form.category || !form.description.trim()) return 'Add an expense category and name.';
     if (!Number.isFinite(amount) || amount <= 0) return 'Enter an amount greater than zero.';
-    update({ expenses: [{ ...form, id: idFor('EX', data.expenses), amount, createdBy: ownerName }, ...data.expenses] });
+    if (installmentMonths !== null && (!Number.isInteger(installmentMonths) || installmentMonths < 1)) return 'Installment duration must be a whole number of months.';
+    update({ expenses: [{ ...form, startMonth: data.expenseBookMonth || today.slice(0, 7), paidMonths: [], installmentMonths, id: idFor('EX', data.expenses), amount, createdBy: ownerName }, ...data.expenses] });
     flash('Expense saved.');
     return '';
+  }
+
+  function updateExpense(id, form) {
+    const amount = Number(form.amount);
+    const installmentMonths = form.installmentMonths === '' || form.installmentMonths == null ? null : Number(form.installmentMonths);
+    if (!form.category || !form.description.trim()) return 'Add an expense category and name.';
+    if (!Number.isFinite(amount) || amount <= 0) return 'Enter an amount greater than zero.';
+    if (installmentMonths !== null && (!Number.isInteger(installmentMonths) || installmentMonths < 1)) return 'Installment duration must be a whole number of months.';
+    update({ expenses: data.expenses.map((expense) => expense.id === id ? { ...expense, ...form, installmentMonths, amount } : expense) });
+    flash('Expense updated.');
+    return '';
+  }
+
+  function markExpensePaid(expenseId, paidMonth) {
+    update({
+      expenses: data.expenses.map((expense) => expense.id === expenseId
+        ? { ...expense, paidMonths: [...new Set([...(expense.paidMonths || []), paidMonth])] }
+        : expense),
+    });
+    flash('Expense marked as paid.');
+  }
+
+  function skipExpenseBookMonth() {
+    const next = nextMonth(data.expenseBookMonth || today.slice(0, 7));
+    update({ expenseBookMonth: next });
+    setExpenseViewMonth(next);
   }
 
   function updateOrderStatus(id, status) {
@@ -611,10 +690,9 @@ function WorkspaceApp({ owner, onSignOut }) {
             {active === 'Orders' && <button className="button button-primary" onClick={() => setModal('order')}><Icon name="plus" /> Create order</button>}
             {active === 'Customers' && <button className="button button-primary" onClick={() => setModal('customer')}><Icon name="plus" /> Add customer</button>}
             {active === 'Products' && <button className="button button-primary" onClick={() => setModal('product')}><Icon name="plus" /> Add product</button>}
-            {active === 'Inventory' && <button className="button button-primary" onClick={() => setModal('stock')}><Icon name="plus" /> Update stock</button>}
             {active === 'Production' && <button className="button button-primary" onClick={() => setModal('production')}><Icon name="plus" /> Record production</button>}
             {active === 'Payments' && <button className="button button-primary" onClick={() => setModal('payment')}><Icon name="plus" /> Record payment</button>}
-            {active === 'Expenses' && <button className="button button-primary" onClick={() => setModal('expense')}><Icon name="plus" /> Add expense</button>}
+            {active === 'Expenses' && <div className="inventory-panel-actions"><button className="button button-primary" disabled={expenseViewMonth !== expenseBookMonth} onClick={() => { setSelectedExpense(null); setModal('expense'); }}><Icon name="plus" /> Add expense</button>{expenseViewMonth === expenseBookMonth && canSkipExpenseMonth && <button className="button button-secondary" onClick={skipExpenseBookMonth}>Time skip →</button>}</div>}
             {active === 'Reports' && <button className="button button-secondary print-action" onClick={printRecord}><Icon name="print" /> Print report</button>}
           </div>
           {saveError && <div className="toast error-toast" role="alert"><span>!</span>Couldn’t save your changes: {saveError}{saveError.includes('newer studio records') && <button className="conflict-reload" onClick={() => window.location.reload()}>Reload records</button>}<button onClick={() => setSaveError('')} aria-label="Dismiss notification">×</button></div>}
@@ -624,19 +702,19 @@ function WorkspaceApp({ owner, onSignOut }) {
           {active === 'Customers' && <CustomersPage customers={filteredCustomers} search={search} setSearch={setSearch} onPrint={printRecord} onEdit={(customer) => { setSelectedCustomer(customer); setModal('customer'); }} />}
           {active === 'Orders' && <OrdersPage orders={filteredOrders} data={data} search={search} setSearch={setSearch} onUpdate={updateOrderStatus} onEdit={(order) => { setSelectedOrder(order); setModal('order'); }} onPrint={(order) => { setSelectedOrder(order); setModal('slip'); }} />}
           {active === 'Products' && <ProductsPage products={data.products} materials={data.materials} onRecipe={updateRecipe} />}
-          {active === 'Inventory' && <InventoryPage materials={data.materials} movements={data.movements} lowStock={lowStock} products={data.products} batches={data.batches} orders={data.orders} onAdd={() => { setSelectedMaterial(null); setModal('material'); }} onEdit={(material) => { setSelectedMaterial(material); setModal('material'); }} />}
+          {active === 'Inventory' && <InventoryPage materials={data.materials} movements={data.movements} lowStock={lowStock} products={data.products} batches={data.batches} orders={data.orders} onAdd={() => { setSelectedMaterial(null); setModal('material'); }} onRestock={(material) => { setSelectedMaterial(material); setModal('stock'); }} />}
           {active === 'Production' && <ProductionPage batches={data.batches} orders={data.orders} products={data.products} materials={data.materials} onCreate={(product) => { setSelectedProduct(product); setModal('production'); }} />}
           {active === 'Payments' && <PaymentsPage orders={data.orders} payments={data.payments} products={data.products} batches={data.batches} onRecordPayment={(order) => { setSelectedOrder(order); setModal('payment'); }} />}
-          {active === 'Expenses' && <ExpensesPage expenses={data.expenses} />}
-          {active === 'Reports' && <ReportsPage month={month} setMonth={setMonth} basis={basis} setBasis={setBasis} orders={monthOrders} candles={monthCandles} souvenirs={monthSouvenirs} total={monthRevenue} expenses={data.expenses.filter((expense) => expense.date?.startsWith(month)).reduce((sum, expense) => sum + Number(expense.amount), 0)} />}
+          {active === 'Expenses' && <ExpensesPage expenses={data.expenses} month={expenseViewMonth} bookMonth={expenseBookMonth} setMonth={setExpenseViewMonth} onMarkPaid={markExpensePaid} onEdit={(expense) => { setSelectedExpense(expense); setModal('expense'); }} />}
+          {active === 'Reports' && <ReportsPage month={month} setMonth={setMonth} basis={basis} setBasis={setBasis} orders={monthOrders} candles={monthCandles} souvenirs={monthSouvenirs} total={monthRevenue} expenses={data.expenses.filter((expense) => expenseIsPaidInMonth(expense, month)).reduce((sum, expense) => sum + Number(expense.amount), 0)} />}
           <footer className="app-footer"><span>Simula Studio <span className="footer-dot">·</span> Est. April 2, 2026</span><span>Made for the little things that mean a lot.</span></footer>
         </div>
       </main>
-      {modal && <Modal type={modal} data={data} selectedOrder={selectedOrder} selectedCustomer={selectedCustomer} selectedMaterial={selectedMaterial} selectedProduct={selectedProduct} onClose={() => { setModal(''); setSelectedOrder(null); setSelectedCustomer(null); setSelectedMaterial(null); setSelectedProduct(null); }} onSave={(form) => {
-        const actions = { customer: selectedCustomer ? (values) => updateCustomer(selectedCustomer.id, values) : addCustomer, product: addProduct, order: selectedOrder ? (values) => updateOrderDetails(selectedOrder.id, values) : addOrder, stock: saveStock, material: saveMaterial, production: recordProduction, payment: recordPayment, expense: recordExpense };
+      {modal && <Modal type={modal} data={data} selectedOrder={selectedOrder} selectedCustomer={selectedCustomer} selectedMaterial={selectedMaterial} selectedProduct={selectedProduct} selectedExpense={selectedExpense} expenseBookMonth={expenseBookMonth} onAddCustomer={addCustomerFromOrder} onClose={() => { setModal(''); setSelectedOrder(null); setSelectedCustomer(null); setSelectedMaterial(null); setSelectedProduct(null); setSelectedExpense(null); }} onSave={(form) => {
+        const actions = { customer: selectedCustomer ? (values) => updateCustomer(selectedCustomer.id, values) : addCustomer, product: addProduct, order: selectedOrder ? (values) => updateOrderDetails(selectedOrder.id, values) : addOrder, stock: saveStock, material: saveMaterial, production: recordProduction, payment: recordPayment, expense: selectedExpense ? (values) => updateExpense(selectedExpense.id, values) : recordExpense };
         if (modal === 'slip') { printRecord(); return ''; }
         const error = actions[modal]?.(form);
-        if (!error) { setModal(''); setSelectedOrder(null); setSelectedCustomer(null); setSelectedMaterial(null); setSelectedProduct(null); }
+        if (!error) { setModal(''); setSelectedOrder(null); setSelectedCustomer(null); setSelectedMaterial(null); setSelectedProduct(null); setSelectedExpense(null); }
         return error;
       }} />}
     </div>
@@ -661,7 +739,21 @@ function pageSubtitle(active) {
 function Dashboard({ data, lowStock, outstanding, setActive, setModal }) {
   const openOrders = data.orders.filter((order) => !['Delivered', 'Cancelled'].includes(order.status));
   const thisMonthOrders = data.orders.filter((order) => order.status !== 'Cancelled' && order.date?.startsWith(today.slice(0, 7)));
+  const totalExpenseCommitment = data.expenses.reduce((sum, expense) => sum + Number(expense.amount) * (Number(expense.installmentMonths) || 1), 0);
+  const installmentTerms = [...new Set(data.expenses.map((expense) => Number(expense.installmentMonths)).filter((months) => Number.isInteger(months) && months > 0))].sort((a, b) => a - b);
+  const expenseCommitmentNote = `${money(totalExpenseCommitment)} total · ${installmentTerms.length ? installmentTerms.map((months) => `${months}-month`).join(', ') + ' installment' + (installmentTerms.length > 1 ? 's' : '') : 'no installment plans'}`;
+  const expenseBookMonth = data.expenseBookMonth || today.slice(0, 7);
+  const thisMonthExpenses = data.expenses.filter((expense) => expenseIsDueInMonth(expense, expenseBookMonth) && !expenseIsPaidInMonth(expense, expenseBookMonth));
+  const thisMonthExpenseTotal = thisMonthExpenses.reduce((sum, expense) => sum + Number(expense.amount), 0);
   const earned = thisMonthOrders.reduce((sum, order) => sum + order.items.reduce((lineSum, item) => lineSum + item.quantity * item.price, 0), 0);
+  const thisMonthMaterialCosts = thisMonthOrders.reduce((orderTotal, order) => orderTotal + order.items.reduce((itemTotal, item) => {
+    const product = data.products.find((entry) => entry.id === item.productId);
+    const materialCostPerItem = (product?.recipe || []).reduce((recipeTotal, usage) => {
+      const material = data.materials.find((entry) => entry.name === usage.material);
+      return recipeTotal + Number(usage.quantity) * Number(material?.price || 0);
+    }, 0);
+    return itemTotal + materialCostPerItem * Number(item.quantity);
+  }, 0), 0);
   const recentOrders = data.orders.slice(0, 5);
   return (
     <>
@@ -673,6 +765,9 @@ function Dashboard({ data, lowStock, outstanding, setActive, setModal }) {
       <div className="section-title-row"><div><h2>Your studio today</h2><p>A little snapshot of how things are going.</p></div><span className="live-pill"><i /> ALL CAUGHT UP</span></div>
       <div className="metric-grid">
         <Metric label="This month’s sales" value={money(earned)} note="Product sales · before shipping" icon="trend" tint="peach" />
+        <Metric label="Raw material costs" value={money(thisMonthMaterialCosts)} note="Materials for this month’s sales · current unit costs" icon="flask" tint="yellow" />
+        <Metric label="Estimated profit" value={money(earned - thisMonthMaterialCosts)} note="Sales less materials · expenses not deducted" icon="trend" tint="sage" />
+        <Metric label="Total expenses this month" value={money(thisMonthExpenseTotal)} note={`${expenseCommitmentNote} · not deducted from sales`} icon="wallet" tint="lavender" />
         <Metric label="Orders in progress" value={openOrders.length} note={`${data.orders.filter((order) => order.status === 'Ready').length} ready for handoff`} icon="box" tint="lavender" />
         <Metric label="To collect" value={money(outstanding)} note={`${data.orders.filter((order) => order.paymentStatus !== 'Paid').length} orders with balance`} icon="wallet" tint="sage" />
         <Metric label="Materials to restock" value={lowStock.length} note={lowStock.length ? `${lowStock.map((item) => item.name).slice(0, 2).join(', ')}${lowStock.length > 2 ? ' +' : ''}` : 'Stock levels look lovely'} icon="spark" tint="yellow" />
@@ -719,7 +814,29 @@ function OrdersPage({ orders, data, search, setSearch, onUpdate, onEdit, onPrint
 }
 
 function ProductsPage({ products, materials, onRecipe }) {
-  return <div className="product-grid">{products.map((product) => <ProductCard key={product.id} product={product} materials={materials} onRecipe={onRecipe} />)}</div>;
+  const [category, setCategory] = useState('All categories');
+  const [search, setSearch] = useState('');
+  const visibleProducts = products.filter((product) => (
+    (category === 'All categories' || product.type === category)
+    && product.name.toLowerCase().includes(search.trim().toLowerCase())
+  ));
+
+  return <>
+    <div className="toolbar product-toolbar">
+      <SearchInput value={search} onChange={setSearch} placeholder="Search product name" />
+      <select className="select-control" aria-label="Filter products by category" value={category} onChange={(event) => setCategory(event.target.value)}>
+        <option>All categories</option>
+        <option>Candle</option>
+        <option>Souvenir</option>
+      </select>
+    </div>
+    {visibleProducts.length
+      ? <div className="product-grid">{visibleProducts.map((product) => <ProductCard key={product.id} product={product} materials={materials} onRecipe={onRecipe} />)}</div>
+      : <section className="panel data-panel"><EmptyState
+        title={products.length ? 'No matching products' : 'Your product collection is waiting'}
+        detail={products.length ? 'Try another product name or choose a different category.' : 'Add your first product to set up its material recipe.'}
+      /></section>}
+  </>;
 }
 
 function ProductCard({ product, materials, onRecipe }) {
@@ -774,10 +891,10 @@ function ProductCard({ product, materials, onRecipe }) {
   </article>;
 }
 
-function InventoryPage({ materials, movements, lowStock, products, batches, orders, onAdd, onEdit }) {
+function InventoryPage({ materials, movements, lowStock, products, batches, orders, onAdd, onRestock }) {
   return <><div className="inventory-summary"><div className="inventory-summary-icon">✿</div><div><strong>{lowStock.length ? `${lowStock.length} materials need a little restock` : 'Your materials are in good shape'}</strong><span>{lowStock.length ? 'Low-stock items are highlighted below.' : 'You’ll see a heads-up here when anything runs low.'}</span></div><span className="summary-count">{lowStock.length} LOW</span></div>
     <section className="panel data-panel"><div className="panel-heading"><div><h3>Materials cupboard</h3><p>Raw materials are tracked here; finished products are listed below.</p></div><div className="inventory-panel-actions"><span className="soft-chip">{materials.filter((m) => m.active).length} active materials</span><button className="button button-secondary" onClick={onAdd}><Icon name="plus" /> Add material</button></div></div>
-      {materials.length ? <div className="table-scroll"><table><thead><tr><th>MATERIAL</th><th>ON HAND</th><th>LOW-STOCK AT</th><th>UNIT COST</th><th>STATUS</th><th>ACTION</th></tr></thead><tbody>{materials.map((m) => <tr key={m.id}><td><span className="material-name-dot"><i />{m.name}</span></td><td className="strong-cell">{m.stock} {m.unit}</td><td>{m.threshold} {m.unit}</td><td>{money(m.price)} / {m.unit}</td><td>{!m.active ? <span className="soft-chip">Inactive</span> : m.stock <= m.threshold ? <span className="status-badge status-low">Restock soon</span> : <span className="status-badge status-healthy">In stock</span>}</td><td><button className="text-link" onClick={() => onEdit(m)}>Edit</button></td></tr>)}</tbody></table></div> : <EmptyState title="No materials added yet" detail="Add your wax, jars, paper, and other materials to track stock." />}</section>
+      {materials.length ? <div className="table-scroll"><table><thead><tr><th>MATERIAL</th><th>ON HAND</th><th>LOW-STOCK AT</th><th>UNIT COST</th><th>STATUS</th><th>ACTION</th></tr></thead><tbody>{materials.map((m) => <tr key={m.id}><td><span className="material-name-dot"><i />{m.name}</span></td><td className="strong-cell">{m.stock} {m.unit}</td><td>{m.threshold} {m.unit}</td><td>{money(m.price)} / {m.unit}</td><td>{!m.active ? <span className="soft-chip">Inactive</span> : m.stock <= m.threshold ? <span className="status-badge status-low">Restock soon</span> : <span className="status-badge status-healthy">In stock</span>}</td><td><button className="button button-primary" onClick={() => onRestock(m)}>Add stock</button></td></tr>)}</tbody></table></div> : <EmptyState title="No materials added yet" detail="Add your wax, jars, paper, and other materials to track stock." />}</section>
     <section className="panel data-panel"><div className="panel-heading"><div><h3>Products cupboard</h3><p>Finished products available after production, minus units reserved for orders.</p></div></div>{products.length ? <div className="table-scroll"><table><thead><tr><th>PRODUCT</th><th>TYPE</th><th>AVAILABLE</th></tr></thead><tbody>{products.map((product) => <tr key={product.id}><td className="strong-cell">{product.name}</td><td>{product.type}</td><td className="strong-cell">{productStock(batches, orders, product.id)}</td></tr>)}</tbody></table></div> : <EmptyState title="No products yet" detail="Add a product before recording production." />}</section>
     <section className="panel data-panel movement-panel"><div className="panel-heading"><div><h3>Recent stock movements</h3><p>Every restock and production deduction, in one place.</p></div></div>{movements.length ? <div className="movement-list">{movements.slice(0, 8).map((movement) => <div className="movement-row" key={movement.id}><span className={`movement-sign ${movement.change > 0 ? 'positive' : 'negative'}`}>{movement.change > 0 ? '+' : '−'}</span><span><strong>{movement.material}</strong><small>{movement.reason} · {new Date(movement.createdAt).toLocaleDateString('en-PH')}</small></span><b>{movement.change > 0 ? '+' : ''}{Number(movement.change).toFixed(3)}</b></div>)}</div> : <EmptyState title="No stock movements yet" detail="Restocks and production batches will show up here." />}</section>
   </>;
@@ -797,15 +914,37 @@ function PaymentsPage({ orders, payments, products, batches, onRecordPayment }) 
   </>;
 }
 
-function ExpensesPage({ expenses }) {
-  const total = expenses.reduce((sum, expense) => sum + Number(expense.amount), 0);
-  return <><section className="payment-summary-grid"><SummaryTile label="Recorded expenses" value={money(total)} note={`${expenses.length} business expenses`} /><SummaryTile label="This month" value={money(expenses.filter((expense) => expense.date?.startsWith(today.slice(0, 7))).reduce((sum, expense) => sum + Number(expense.amount), 0))} note="Spending in the current month" /></section>
-    <section className="panel data-panel"><div className="panel-heading"><div><h3>Expense book</h3><p>Materials, packaging, delivery, and all the in-between.</p></div></div>{expenses.length ? <div className="table-scroll"><table><thead><tr><th>DATE</th><th>CATEGORY</th><th>DESCRIPTION</th><th>METHOD</th><th>RECEIPT</th><th>AMOUNT</th></tr></thead><tbody>{expenses.map((expense) => <tr key={expense.id}><td>{dateLabel(expense.date)}</td><td><span className="soft-chip">{expense.category}</span></td><td className="strong-cell">{expense.description}</td><td>{expense.method}</td><td>{expense.receipt ? <a href={expense.receipt} target="_blank" rel="noreferrer">View receipt ↗</a> : '—'}</td><td>{money(expense.amount)}</td></tr>)}</tbody></table></div> : <EmptyState title="No expenses to show" detail="Log a business expense to keep your studio books tidy." />}</section>
+function ExpensesPage({ expenses, month, bookMonth, setMonth, onMarkPaid, onEdit }) {
+  const monthExpenses = expenses.filter((expense) => expenseIsDueInMonth(expense, month));
+  const unpaidThisMonth = monthExpenses.filter((expense) => !expenseIsPaidInMonth(expense, month));
+  const recordedTotal = expenses.reduce((sum, expense) => sum + Number(expense.amount) * (Number(expense.installmentMonths) || 1), 0);
+  const monthUnpaidTotal = unpaidThisMonth.reduce((sum, expense) => sum + Number(expense.amount), 0);
+  const monthLabel = new Date(`${month}-01T00:00:00`).toLocaleDateString('en-PH', { month: 'long', year: 'numeric' });
+  return <><section className="payment-summary-grid"><SummaryTile label="Recorded expenses" value={money(recordedTotal)} note="Full purchase and installment commitments" /><SummaryTile label="This month unpaid" value={money(monthUnpaidTotal)} note={`Unpaid payments for ${monthLabel}`} /></section>
+    <section className="panel data-panel"><div className="panel-heading"><div><h3>Expense book · {monthLabel}</h3><p>Mark each month's payment as paid. Installments continue into the next book until complete.</p></div><label className="expense-month-picker"><span>VIEW MONTH</span><input type="month" value={month} max={bookMonth} onChange={(event) => setMonth(event.target.value)} /></label></div>{monthExpenses.length ? <div className="table-scroll"><table><thead><tr><th>CATEGORY</th><th>EXPENSE NAME</th><th>METHOD</th><th>INSTALLMENT</th><th>MONTHLY PAYMENT</th><th>ACTION</th></tr></thead><tbody>{monthExpenses.map((expense) => { const months = Number(expense.installmentMonths) || 1; const isInstallment = months > 1; const commitment = Number(expense.amount) * months; const isPaid = expenseIsPaidInMonth(expense, month); const startMonth = expense.startMonth || expense.date?.slice(0, 7); const paidCount = (expense.paidMonths || []).filter((paidMonth) => monthIndex(paidMonth) >= monthIndex(startMonth) && monthIndex(paidMonth) < monthIndex(startMonth) + months).length; return <tr key={expense.id}><td><span className="soft-chip">{expense.category}</span></td><td className="strong-cell">{expense.description}<small className="table-sub"><button className="text-link" onClick={() => onEdit(expense)}>Edit details</button>{expense.receipt && <> · <a href={expense.receipt} target="_blank" rel="noreferrer">View receipt ↗</a></>}</small></td><td>{expense.method || '—'}</td><td>{isInstallment ? `${months} months · ${paidCount}/${months} paid · ${money(commitment)} total` : 'One-time'}</td><td>{money(expense.amount)}</td><td>{isPaid ? <button className="button payment-row-action payment-paid-action" type="button" disabled>Paid</button> : month === bookMonth ? <button className="button button-primary payment-row-action" type="button" onClick={() => onMarkPaid(expense.id, month)}>Paid</button> : <span className="status-badge status-partial">Unpaid</span>}</td></tr>; })}</tbody></table></div> : <EmptyState title="No expenses in this month's book" detail={month === bookMonth ? 'Add an expense to start tracking this month’s payments.' : 'There were no expenses due in this month.'} />}</section>
   </>;
 }
 
 function ReportsPage({ month, setMonth, basis, setBasis, orders, candles, souvenirs, total, expenses }) {
-  return <><section className="report-controls panel"><div><label htmlFor="report-month">REPORTING MONTH</label><input id="report-month" type="month" value={month} onChange={(e) => setMonth(e.target.value)} /></div><div><label htmlFor="report-basis">REPORTING BASIS</label><select id="report-basis" value={basis} onChange={(e) => setBasis(e.target.value)}><option value="order">Order date</option><option value="due">Due date</option></select></div><div className="report-basis-note"><span>ⓘ</span><p>Income uses <strong>{basis === 'order' ? 'order date' : 'due date'}</strong>. Shipping is excluded from all product totals.</p></div></section>
+  const candleUnits = orders.reduce((sum, order) => sum + order.items.filter((item) => item.type === 'Candle').reduce((itemSum, item) => itemSum + Number(item.quantity), 0), 0);
+  const souvenirUnits = orders.reduce((sum, order) => sum + order.items.filter((item) => item.type === 'Souvenir').reduce((itemSum, item) => itemSum + Number(item.quantity), 0), 0);
+  const totalUnits = candleUnits + souvenirUnits;
+  const candleShare = totalUnits ? candleUnits / totalUnits * 100 : 0;
+  const souvenirShare = totalUnits ? souvenirUnits / totalUnits * 100 : 0;
+  const bestSellingType = candleUnits === souvenirUnits ? 'Both product types sold equally' : candleUnits > souvenirUnits ? 'Candles sold more' : 'Souvenirs sold more';
+  return <>
+    <section className="sales-comparison" aria-label="Units sold comparison">
+      <div className="sales-comparison-heading"><div><h3>Units sold by product type</h3><p>For the selected month and reporting basis</p></div><strong>{bestSellingType}</strong></div>
+      <div className="sales-proportion" role="img" aria-label={`Of ${totalUnits} units sold, candles are ${candleUnits} (${candleShare.toFixed(1)}%) and souvenirs are ${souvenirUnits} (${souvenirShare.toFixed(1)}%).`}>
+        <span className="sales-proportion-candles" style={{ width: `${candleShare}%` }} />
+        <span className="sales-proportion-souvenirs" style={{ width: `${souvenirShare}%` }} />
+      </div>
+      <div className="sales-proportion-legend">
+        <span><i className="sales-legend-candle" />Candles <strong>{candleUnits}</strong><small>{candleShare.toFixed(1)}%</small></span>
+        <span><i className="sales-legend-souvenir" />Souvenirs <strong>{souvenirUnits}</strong><small>{souvenirShare.toFixed(1)}%</small></span>
+      </div>
+    </section>
+    <section className="report-controls panel"><div><label htmlFor="report-month">REPORTING MONTH</label><input id="report-month" type="month" value={month} onChange={(e) => setMonth(e.target.value)} /></div><div><label htmlFor="report-basis">REPORTING BASIS</label><select id="report-basis" value={basis} onChange={(e) => setBasis(e.target.value)}><option value="order">Order date</option><option value="due">Due date</option></select></div><div className="report-basis-note"><span>ⓘ</span><p>Income uses <strong>{basis === 'order' ? 'order date' : 'due date'}</strong>. Shipping is excluded from all product totals.</p></div></section>
     <section className="report-paper"><div className="report-header"><div><div className="report-brand"><span className="brand-mark">s<span>.</span></span><span><strong>simula studio</strong><small>HANDMADE WITH HEART</small></span></div><p className="eyebrow">MONTHLY BUSINESS REPORT</p><h2>{new Date(`${month}-01T00:00:00`).toLocaleDateString('en-PH', { month: 'long', year: 'numeric' })}</h2><p>Reporting basis: <strong>{basis === 'order' ? 'Order date' : 'Due date'}</strong></p></div><span className="report-stamp">STUDIO<br />RECORDS</span></div>
       <div className="report-rule" /><div className="report-line"><span>Scented candles</span><small>{orders.filter((order) => order.items.some((item) => item.type === 'Candle')).length} orders</small><strong>{money(candles)}</strong></div><div className="report-line"><span>Souvenirs</span><small>{orders.filter((order) => order.items.some((item) => item.type === 'Souvenir')).length} orders</small><strong>{money(souvenirs)}</strong></div><div className="report-line report-total"><span>Total product income</span><strong>{money(total)}</strong></div>
       <div className="report-footnote"><span>✓</span> Shipping fees are excluded. Income is based on order item quantities × selling price.</div>
@@ -832,8 +971,11 @@ function EmptyState({ title, detail, action, onClick }) {
   return <div className="empty-state"><span className="empty-flower">✿</span><h4>{title}</h4><p>{detail}</p>{action && <button className="button button-secondary" onClick={onClick}>{action}</button>}</div>;
 }
 
-function Modal({ type, data, selectedOrder, selectedCustomer, selectedMaterial, selectedProduct, onClose, onSave }) {
+function Modal({ type, data, selectedOrder, selectedCustomer, selectedMaterial, selectedProduct, selectedExpense, expenseBookMonth, onAddCustomer, onClose, onSave }) {
   const [error, setError] = useState('');
+  const [showQuickCustomer, setShowQuickCustomer] = useState(false);
+  const [quickCustomer, setQuickCustomer] = useState({ name: '', phone: '', email: '', address: '', notes: '' });
+  const [quickCustomerError, setQuickCustomerError] = useState('');
   const [form, setForm] = useState(() => {
     const firstProduct = data.products[0];
     const paymentOrders = data.orders.filter((order) => order.status !== 'Cancelled' && order.total > data.payments.filter((payment) => payment.orderId === order.id).reduce((sum, payment) => sum + Number(payment.amount), 0) && data.payments.filter((payment) => payment.orderId === order.id).length < 2 && !orderStockShortage(order, data.products, data.batches, data.orders));
@@ -842,10 +984,19 @@ function Modal({ type, data, selectedOrder, selectedCustomer, selectedMaterial, 
       product: { name: '', type: 'Candle', price: '' },
       material: { name: selectedMaterial?.name || '', unit: selectedMaterial?.unit || '', price: selectedMaterial?.price ?? '', threshold: selectedMaterial?.threshold ?? '', active: selectedMaterial?.active ?? true },
       order: { customerId: selectedOrder?.customerId || data.customers[0]?.id || '', items: selectedOrder?.items.map((item, index) => ({ ...item, id: item.id || `${selectedOrder.id}-item-${index + 1}`, quantity: String(item.quantity), price: String(item.price) })) || [{ productId: firstProduct?.id || '', quantity: '1', price: firstProduct?.price || '' }], date: selectedOrder?.date || today, dueDate: selectedOrder?.dueDate || '', shipping: String(selectedOrder?.shipping || 0) },
-      stock: { materialId: data.materials[0]?.id || '', action: 'Restock', quantity: '', reason: '' },
+      stock: { materialId: selectedMaterial?.id || data.materials[0]?.id || '', action: 'Restock', quantity: '', reason: '' },
       production: { productId: selectedProduct?.id || firstProduct?.id || '', quantity: '1' },
-      payment: { orderId: selectedOrder?.id || paymentOrders[0]?.id || '', method: 'GCash', amount: '', reference: '' },
-      expense: { category: 'Materials', description: '', amount: '', date: today, method: 'Cash', receipt: '' },
+      payment: {
+        orderId: selectedOrder?.id || paymentOrders[0]?.id || '',
+        method: 'GCash',
+        amount: (() => {
+          const order = data.orders.find((entry) => entry.id === (selectedOrder?.id || paymentOrders[0]?.id));
+          const payments = data.payments.filter((payment) => payment.orderId === order?.id);
+          return payments.length === 1 ? String(Number(order.total) - payments.reduce((sum, payment) => sum + Number(payment.amount), 0)) : '';
+        })(),
+        reference: '',
+      },
+      expense: { category: selectedExpense?.category === 'Materials' ? 'Other' : selectedExpense?.category || 'Other', description: selectedExpense?.description || '', amount: selectedExpense?.amount ?? '', installmentMonths: selectedExpense?.installmentMonths ?? '', date: selectedExpense?.date || (expenseBookMonth === today.slice(0, 7) ? today : `${expenseBookMonth}-01`), method: selectedExpense?.method || 'Cash', receipt: selectedExpense?.receipt || '' },
     };
     return defaults[type] || {};
   });
@@ -856,8 +1007,26 @@ function Modal({ type, data, selectedOrder, selectedCustomer, selectedMaterial, 
         const product = data.products.find((entry) => entry.id === value);
         next.price = product?.price || '';
       }
+      if (key === 'orderId' && type === 'payment') {
+        const order = data.orders.find((entry) => entry.id === value);
+        const payments = data.payments.filter((payment) => payment.orderId === value);
+        next.amount = payments.length === 1
+          ? String(Number(order.total) - payments.reduce((sum, payment) => sum + Number(payment.amount), 0))
+          : '';
+      }
       return next;
     });
+  };
+  const saveQuickCustomer = () => {
+    const result = onAddCustomer(quickCustomer);
+    if (result.error) {
+      setQuickCustomerError(result.error);
+      return;
+    }
+    set('customerId', result.customer.id);
+    setShowQuickCustomer(false);
+    setQuickCustomer({ name: '', phone: '', email: '', address: '', notes: '' });
+    setQuickCustomerError('');
   };
   const setLine = (index, key, value) => {
     setForm((current) => ({
@@ -871,7 +1040,10 @@ function Modal({ type, data, selectedOrder, selectedCustomer, selectedMaterial, 
   const addLine = () => setForm((current) => ({ ...current, items: [...current.items, { productId: data.products[0]?.id || '', quantity: '1', price: data.products[0]?.price || '' }] }));
   const removeLine = (index) => setForm((current) => ({ ...current, items: current.items.filter((_, position) => position !== index) }));
   const payOrder = data.orders.find((order) => order.id === form.orderId);
-  const paymentTotal = data.payments.filter((payment) => payment.orderId === form.orderId).reduce((sum, payment) => sum + Number(payment.amount), 0);
+  const payOrderPayments = data.payments.filter((payment) => payment.orderId === form.orderId);
+  const paymentTotal = payOrderPayments.reduce((sum, payment) => sum + Number(payment.amount), 0);
+  const remainingPaymentBalance = payOrder ? Math.max(0, Number(payOrder.total) - paymentTotal) : 0;
+  const isFinalReceipt = payOrderPayments.length === 1;
   const paymentOrders = data.orders.filter((order) => order.status !== 'Cancelled' && order.total > data.payments.filter((payment) => payment.orderId === order.id).reduce((sum, payment) => sum + Number(payment.amount), 0) && data.payments.filter((payment) => payment.orderId === order.id).length < 2 && !orderStockShortage(order, data.products, data.batches, data.orders));
   const selectedProductionProduct = data.products.find((product) => product.id === form.productId);
   const productionQuantity = Number(form.quantity);
@@ -881,18 +1053,21 @@ function Modal({ type, data, selectedOrder, selectedCustomer, selectedMaterial, 
   }) || [];
   const productionShortage = productionDeductions.find(({ material, needed }) => !material || material.stock < needed);
   const orderItemTotal = (form.items || []).reduce((sum, item) => sum + Number(item.quantity || 0) * Number(item.price || 0), 0);
-  const title = { customer: selectedCustomer ? 'Update customer profile' : 'Add a customer', product: 'Add a product', material: selectedMaterial ? 'Edit material' : 'Add a material', order: selectedOrder ? 'Update order' : 'Create an order', stock: 'Update material stock', production: 'Create finished products', payment: 'Record a payment', expense: 'Add an expense', slip: 'Order slip' }[type];
+  const title = { customer: selectedCustomer ? 'Update customer profile' : 'Add a customer', product: 'Add a product', material: selectedMaterial ? 'Edit material' : 'Add a material', order: selectedOrder ? 'Update order' : 'Create an order', stock: 'Update material stock', production: 'Create finished products', payment: 'Record a payment', expense: selectedExpense ? 'Edit expense' : 'Add an expense', slip: 'Order slip' }[type];
   if (type === 'slip' && selectedOrder) return <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}><section className="modal-card slip-card"><button className="modal-close" onClick={onClose} aria-label="Close">×</button><div className="slip-brand"><span className="brand-mark">s<span>.</span></span><span><strong>simula studio</strong><small>HANDMADE WITH HEART</small></span></div><p className="eyebrow">ORDER SLIP · {selectedOrder.id}</p><h2>{selectedOrder.customer}</h2><p>Order date {dateLabel(selectedOrder.date)} · Due {dateLabel(selectedOrder.dueDate)}</p><div className="slip-items">{selectedOrder.items.map((item) => <div key={item.productId}><span>{item.quantity} × {item.name}</span><strong>{money(item.quantity * item.price)}</strong></div>)}</div><div className="slip-items"><div><span>Shipping</span><strong>{money(selectedOrder.shipping)}</strong></div></div><div className="slip-total"><span>Total due</span><strong>{money(selectedOrder.total)}</strong></div><p className="slip-thanks">Thank you for supporting our little studio ✿</p><button className="button button-primary modal-submit" onClick={() => onSave({})}><Icon name="print" /> Print order slip</button></section></div>;
   return <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div className="modal-header"><div><p className="eyebrow">SIMULA STUDIO</p><h2 id="modal-title">{title}</h2></div><button className="modal-close" onClick={onClose} aria-label="Close">×</button></div>
     {error && <div className="form-error" role="alert">{error}</div>}
     {type === 'customer' && <div className="form-grid"><Field label="Full name" required><input autoFocus value={form.name} maxLength="150" onChange={(e) => set('name', e.target.value)} placeholder="e.g. Alex Santos" /></Field><Field label="Contact number"><input value={form.phone} maxLength="20" onChange={(e) => set('phone', e.target.value)} placeholder="+63 912 345 6789" /></Field><Field label="Email address"><input type="email" value={form.email} onChange={(e) => set('email', e.target.value)} placeholder="alex@email.com" /></Field><Field label="Address"><input value={form.address} onChange={(e) => set('address', e.target.value)} placeholder="City or delivery address" /></Field><Field label="Notes" wide><textarea rows="3" value={form.notes} onChange={(e) => set('notes', e.target.value)} placeholder="Preferences, reminders, or little details..." /></Field></div>}
     {type === 'product' && <div className="form-grid"><Field label="Product name" required><input autoFocus value={form.name} onChange={(e) => set('name', e.target.value)} placeholder="e.g. Lavender candle · 150 ml" /></Field><Field label="Product type"><select value={form.type} onChange={(e) => set('type', e.target.value)}><option>Candle</option><option>Souvenir</option></select></Field><Field label="Selling price (₱)" required><input type="number" min="0.01" step="0.01" value={form.price} onChange={(e) => set('price', e.target.value)} placeholder="0.00" /></Field><p className="form-hint wide">You can set up its adjustable material recipe on the Products page after saving.</p></div>}
-    {type === 'material' && <div className="form-grid"><Field label="Material name" required><input autoFocus maxLength="150" value={form.name} onChange={(e) => set('name', e.target.value)} placeholder="e.g. Candle jar" /></Field><Field label="Unit" required><input maxLength="30" value={form.unit} onChange={(e) => set('unit', e.target.value)} placeholder="kg, pc, sheet…" /></Field><Field label="Unit price (₱)" required><input type="number" min="0" step="0.01" value={form.price} onChange={(e) => set('price', e.target.value)} /></Field><Field label="Low-stock threshold" required><input type="number" min="0" step="0.001" value={form.threshold} onChange={(e) => set('threshold', e.target.value)} /></Field><label className="material-active wide"><input type="checkbox" checked={form.active} onChange={(e) => set('active', e.target.checked)} /><span>Active material · include in recipes and stock alerts</span></label>{!selectedMaterial && <p className="form-hint wide">New materials start at zero on hand. Use “Update stock” to record the first restock.</p>}</div>}
-    {type === 'order' && <div className="form-grid">{!data.customers.length && <p className="form-hint wide">Add a customer profile first to create an order.</p>}<Field label="Customer" required><select value={form.customerId} onChange={(e) => set('customerId', e.target.value)}><option value="">Choose customer</option>{data.customers.map((c) => <option value={c.id} key={c.id}>{c.name}</option>)}</select></Field><div className="order-lines wide"><div className="order-lines-header"><span>Order items</span><button type="button" className="text-link" onClick={addLine}>+ Add item</button></div>{form.items.map((item, index) => <div className="order-line" key={item.id || `new-${index}`}><select aria-label="Product variant" value={item.productId} onChange={(e) => setLine(index, 'productId', e.target.value)}>{data.products.map((product) => <option value={product.id} key={product.id}>{product.name} · {product.type}</option>)}</select><input aria-label="Item quantity" type="number" min="1" step="1" value={item.quantity} onChange={(e) => setLine(index, 'quantity', e.target.value)} /><input aria-label="Unit price in pesos" type="number" min="0.01" step="0.01" value={item.price} onChange={(e) => setLine(index, 'price', e.target.value)} /><button type="button" className="remove-line" aria-label="Remove item" onClick={() => removeLine(index)}>×</button></div>)}</div><Field label="Order date"><input type="date" value={form.date} onChange={(e) => set('date', e.target.value)} /></Field><Field label="Due date"><input type="date" value={form.dueDate} onChange={(e) => set('dueDate', e.target.value)} /></Field><Field label="Shipping fee (₱) · excluded from reports"><input type="number" min="0" step="0.01" value={form.shipping} onChange={(e) => set('shipping', e.target.value)} /></Field><div className="order-total-preview"><span>Order total</span><strong>{money(orderItemTotal + Number(form.shipping || 0))}</strong></div></div>}
-    {type === 'stock' && <div className="form-grid"><Field label="Material" required><select value={form.materialId} onChange={(e) => set('materialId', e.target.value)}>{data.materials.map((m) => <option value={m.id} key={m.id}>{m.name} · {m.stock} {m.unit} on hand</option>)}</select></Field><Field label="Stock action"><select value={form.action} onChange={(e) => set('action', e.target.value)}><option>Restock</option><option>Remove</option><option>Set balance</option></select></Field><Field label={`Quantity (${data.materials.find((m) => m.id === form.materialId)?.unit || 'units'})`} required><input type="number" min={form.action === 'Set balance' ? '0' : '0.001'} step="0.001" value={form.quantity} onChange={(e) => set('quantity', e.target.value)} /></Field><Field label="Reason"><input value={form.reason} onChange={(e) => set('reason', e.target.value)} placeholder="Supplier delivery, count correction..." /></Field></div>}
+    {type === 'material' && <div className="form-grid"><Field label="Material name" required><input autoFocus maxLength="150" value={form.name} onChange={(e) => set('name', e.target.value)} placeholder="e.g. Candle jar" /></Field><Field label="Unit" required><input maxLength="30" value={form.unit} onChange={(e) => set('unit', e.target.value)} placeholder="kg, pc, sheet…" /></Field><Field label="Unit price (₱)" required><input type="number" min="0" step="0.01" value={form.price} onChange={(e) => set('price', e.target.value)} /></Field><Field label="Low-stock threshold" required><input type="number" min="0" step="0.001" value={form.threshold} onChange={(e) => set('threshold', e.target.value)} /></Field><label className="material-active wide"><input type="checkbox" checked={form.active} onChange={(e) => set('active', e.target.checked)} /><span>Active material · include in recipes and stock alerts</span></label>{!selectedMaterial && <p className="form-hint wide">New materials start at zero on hand. Use “Add stock” in the Materials cupboard to record the first restock.</p>}</div>}
+    {type === 'order' && <div className="form-grid">{!data.customers.length && <p className="form-hint wide">Add a customer profile first to create an order.</p>}
+      <div className="order-customer-select"><Field label="Customer" required><select value={form.customerId} onChange={(e) => set('customerId', e.target.value)}><option value="">Choose customer</option>{data.customers.map((c) => <option value={c.id} key={c.id}>{c.name}</option>)}</select></Field><button className="button button-secondary" type="button" onClick={() => { setShowQuickCustomer((visible) => !visible); setQuickCustomerError(''); }}>Add customer</button></div>
+      {showQuickCustomer && <div className="order-quick-customer wide"><div className="order-quick-customer-heading"><strong>New customer</strong><button className="text-link" type="button" onClick={() => { setShowQuickCustomer(false); setQuickCustomerError(''); }}>Cancel</button></div>{quickCustomerError && <div className="form-error" role="alert">{quickCustomerError}</div>}<div className="form-grid"><Field label="Full name" required><input autoFocus value={quickCustomer.name} onChange={(event) => setQuickCustomer((current) => ({ ...current, name: event.target.value }))} placeholder="e.g. Alex Santos" /></Field><Field label="Contact number"><input value={quickCustomer.phone} onChange={(event) => setQuickCustomer((current) => ({ ...current, phone: event.target.value }))} placeholder="+63 912 345 6789" /></Field><Field label="Email address"><input type="email" value={quickCustomer.email} onChange={(event) => setQuickCustomer((current) => ({ ...current, email: event.target.value }))} placeholder="alex@email.com" /></Field><Field label="Address"><input value={quickCustomer.address} onChange={(event) => setQuickCustomer((current) => ({ ...current, address: event.target.value }))} placeholder="City or delivery address" /></Field><Field label="Notes" wide><textarea rows="2" value={quickCustomer.notes} onChange={(event) => setQuickCustomer((current) => ({ ...current, notes: event.target.value }))} placeholder="Preferences or details..." /></Field><div className="order-quick-customer-actions wide"><button className="button button-primary" type="button" onClick={saveQuickCustomer}>Save and select customer</button></div></div></div>}
+      <div className="order-lines wide"><div className="order-lines-header"><span>Order items</span><button type="button" className="text-link" onClick={addLine}>+ Add item</button></div>{form.items.map((item, index) => <div className="order-line" key={item.id || `new-${index}`}><select aria-label="Product variant" value={item.productId} onChange={(e) => setLine(index, 'productId', e.target.value)}>{data.products.map((product) => <option value={product.id} key={product.id}>{product.name} · {product.type}</option>)}</select><input aria-label="Item quantity" type="number" min="1" step="1" value={item.quantity} onChange={(e) => setLine(index, 'quantity', e.target.value)} /><input aria-label="Unit price in pesos" type="number" min="0.01" step="0.01" value={item.price} onChange={(e) => setLine(index, 'price', e.target.value)} /><button type="button" className="remove-line" aria-label="Remove item" onClick={() => removeLine(index)}>×</button></div>)}</div><Field label="Order date"><input type="date" value={form.date} onChange={(e) => set('date', e.target.value)} /></Field><Field label="Due date"><input type="date" value={form.dueDate} onChange={(e) => set('dueDate', e.target.value)} /></Field><Field label="Shipping fee (₱) · excluded from reports"><input type="number" min="0" step="0.01" value={form.shipping} onChange={(e) => set('shipping', e.target.value)} /></Field><div className="order-total-preview"><span>Order total</span><strong>{money(orderItemTotal + Number(form.shipping || 0))}</strong></div></div>}
+    {type === 'stock' && <div className="form-grid">{selectedMaterial ? <Field label="Material"><input readOnly value={`${selectedMaterial.name} · ${selectedMaterial.stock} ${selectedMaterial.unit} on hand`} /></Field> : <Field label="Material" required><select value={form.materialId} onChange={(e) => set('materialId', e.target.value)}>{data.materials.map((m) => <option value={m.id} key={m.id}>{m.name} · {m.stock} {m.unit} on hand</option>)}</select></Field>}<Field label="Stock action"><select value={form.action} onChange={(e) => set('action', e.target.value)}><option>Restock</option><option>Remove</option><option>Set balance</option></select></Field><Field label={`Quantity (${data.materials.find((m) => m.id === form.materialId)?.unit || 'units'})`} required><input type="number" min={form.action === 'Set balance' ? '0' : '0.001'} step="0.001" value={form.quantity} onChange={(e) => set('quantity', e.target.value)} /></Field><Field label="Reason"><input value={form.reason} onChange={(e) => set('reason', e.target.value)} placeholder="Supplier delivery, count correction..." /></Field></div>}
     {type === 'production' && <div className="form-grid"><Field label="Product to make" required wide><select value={form.productId} onChange={(e) => set('productId', e.target.value)}>{data.products.map((product) => <option value={product.id} key={product.id}>{product.name} · {product.type}</option>)}</select></Field><Field label="Quantity to make" required><input autoFocus type="number" min="1" step="1" value={form.quantity} onChange={(e) => set('quantity', e.target.value)} /></Field><div className="production-check"><span>✦</span>Required materials are checked together before inventory is changed.</div>{productionShortage && Number.isInteger(productionQuantity) && productionQuantity > 0 && <div className="form-error wide">Not enough {productionShortage.material?.name || 'active material'} for this batch. Needed {productionShortage.needed.toFixed(3)} {productionShortage.material?.unit || ''}; available {productionShortage.material?.stock ?? 0} {productionShortage.material?.unit || ''}. No stock will be changed.</div>}</div>}
-    {type === 'payment' && <div className="form-grid">{!paymentOrders.length && <p className="form-hint wide">No order is ready for payment. Produce and reserve all finished products for an order first.</p>}<Field label="Order" required wide><select value={form.orderId} onChange={(e) => set('orderId', e.target.value)}><option value="">Choose an order</option>{paymentOrders.map((order) => { const count = data.payments.filter((p) => p.orderId === order.id).length; const paid = data.payments.filter((p) => p.orderId === order.id).reduce((sum, p) => sum + Number(p.amount), 0); return <option value={order.id} key={order.id}>{order.id} · {order.customer} · {money(order.total - paid)} due · {count}/2 receipts</option>; })}</select></Field><Field label="Amount (₱)" required><input type="number" min="0.01" max={payOrder ? payOrder.total - paymentTotal : ''} step="0.01" value={form.amount} onChange={(e) => set('amount', e.target.value)} placeholder="0.00" /></Field><Field label="Payment method"><select value={form.method} onChange={(e) => set('method', e.target.value)}><option>GCash</option><option>Cash</option></select></Field><Field label="Reference number (optional)" wide><input value={form.reference} onChange={(e) => set('reference', e.target.value)} placeholder="GCash reference or receipt note" /></Field>{payOrder && <div className="payment-preview wide"><span>Order total <strong>{money(payOrder.total)}</strong></span><span>Paid so far <strong>{money(paymentTotal)}</strong></span><span>Remaining <strong>{money(payOrder.total - paymentTotal)}</strong></span><span>Receipts <strong>{data.payments.filter((p) => p.orderId === form.orderId).length} / 2 maximum</strong></span></div>}</div>}
-    {type === 'expense' && <div className="form-grid"><Field label="Category"><select value={form.category} onChange={(e) => set('category', e.target.value)}>{['Materials', 'Packaging', 'Delivery', 'Marketing', 'Utilities', 'Equipment', 'Other'].map((category) => <option key={category}>{category}</option>)}</select></Field><Field label="Amount (₱)" required><input type="number" min="0.01" step="0.01" value={form.amount} onChange={(e) => set('amount', e.target.value)} placeholder="0.00" /></Field><Field label="Description" required wide><input value={form.description} onChange={(e) => set('description', e.target.value)} placeholder="What was the expense for?" /></Field><Field label="Expense date"><input type="date" value={form.date} onChange={(e) => set('date', e.target.value)} /></Field><Field label="Payment method"><select value={form.method} onChange={(e) => set('method', e.target.value)}><option>Cash</option><option>GCash</option><option>Bank transfer</option><option>Other</option></select></Field><Field label="Receipt link (optional)" wide><input type="url" value={form.receipt} onChange={(e) => set('receipt', e.target.value)} placeholder="https://..." /></Field></div>}
+    {type === 'payment' && <div className="form-grid">{!paymentOrders.length && <p className="form-hint wide">No order is ready for payment. Produce and reserve all finished products for an order first.</p>}<Field label="Order" required wide><select value={form.orderId} onChange={(e) => set('orderId', e.target.value)}><option value="">Choose an order</option>{paymentOrders.map((order) => { const count = data.payments.filter((p) => p.orderId === order.id).length; const paid = data.payments.filter((p) => p.orderId === order.id).reduce((sum, p) => sum + Number(p.amount), 0); return <option value={order.id} key={order.id}>{order.id} · {order.customer} · {money(order.total - paid)} due · {count}/2 receipts</option>; })}</select></Field><Field label={isFinalReceipt ? 'Remaining balance (₱)' : 'Amount (₱)'} required><input type="number" min={isFinalReceipt ? remainingPaymentBalance : '0.01'} max={payOrder ? remainingPaymentBalance : ''} step="0.01" value={form.amount} onChange={(e) => set('amount', e.target.value)} placeholder="0.00" readOnly={isFinalReceipt} /></Field><Field label="Payment method"><select value={form.method} onChange={(e) => set('method', e.target.value)}><option>GCash</option><option>Cash</option></select></Field>{isFinalReceipt && <p className="form-hint wide">This is the second and final receipt. It must pay the full remaining balance.</p>}<Field label="Reference number (optional)" wide><input value={form.reference} onChange={(e) => set('reference', e.target.value)} placeholder="GCash reference or receipt note" /></Field>{payOrder && <div className="payment-preview wide"><span>Order total <strong>{money(payOrder.total)}</strong></span><span>Paid so far <strong>{money(paymentTotal)}</strong></span><span>Remaining <strong>{money(payOrder.total - paymentTotal)}</strong></span><span>Receipts <strong>{payOrderPayments.length} / 2 maximum</strong></span></div>}</div>}
+    {type === 'expense' && <div className="form-grid"><Field label="Category"><select value={form.category} onChange={(e) => set('category', e.target.value)}>{['Packaging', 'Delivery', 'Marketing', 'Utilities', 'Equipment', 'Other'].map((category) => <option key={category}>{category}</option>)}</select></Field><Field label="Expense name" required wide><input autoFocus value={form.description} onChange={(e) => set('description', e.target.value)} placeholder="e.g. Office chair" /></Field><Field label="Monthly payment (₱)" required><input type="number" min="0.01" step="0.01" value={form.amount} onChange={(e) => set('amount', e.target.value)} placeholder="0.00" /></Field><Field label="Installment duration (months)"><input type="number" min="1" step="1" value={form.installmentMonths} onChange={(e) => set('installmentMonths', e.target.value)} placeholder="Leave blank if not an installment" /></Field>{Number(form.amount) > 0 && Number(form.installmentMonths) > 0 && <p className="form-hint wide">Total installment commitment: {money(Number(form.amount) * Number(form.installmentMonths))}. The amount recorded is this month’s payment.</p>}<Field label="Expense date"><input type="date" value={form.date} onChange={(e) => set('date', e.target.value)} /></Field><Field label="Payment method"><select value={form.method} onChange={(e) => set('method', e.target.value)}><option>Cash</option><option>GCash</option><option>Bank transfer</option><option>Other</option></select></Field><Field label="Receipt link (optional)" wide><input type="url" value={form.receipt} onChange={(e) => set('receipt', e.target.value)} placeholder="https://..." /></Field></div>}
     <div className="modal-actions"><button className="button button-secondary" onClick={onClose}>Cancel</button><button className="button button-primary" onClick={() => { const validationError = onSave(form); if (validationError) setError(validationError); }}><Icon name="check" /> {type === 'production' ? 'Create products' : `Save ${type === 'customer' ? 'customer' : type === 'order' ? 'order' : type === 'payment' ? 'payment' : type === 'expense' ? 'expense' : type === 'stock' ? 'stock update' : type === 'material' ? 'material' : 'product'}`}</button></div>
   </section></div>;
 }

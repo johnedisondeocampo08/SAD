@@ -8,8 +8,13 @@ function hasValidDate(value) {
   return typeof value === 'string' && !Number.isNaN(Date.parse(value));
 }
 
+function hasValidMonth(value) {
+  return typeof value === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(value);
+}
+
 function isValidWorkspace(state, previous = null) {
   if (!state || typeof state !== 'object' || Array.isArray(state)) return false;
+  if (state.expenseBookMonth !== undefined && !hasValidMonth(state.expenseBookMonth)) return false;
   if (STATE_COLLECTIONS.some((collection) => !Array.isArray(state[collection]))) return false;
   for (const collection of STATE_COLLECTIONS) {
     const records = state[collection];
@@ -40,7 +45,7 @@ function isValidWorkspace(state, previous = null) {
     return Math.abs(Number(order.total) - itemTotal - Number(order.shipping || 0)) > 0.01;
   })) return false;
   if (state.payments.some((payment) => !Number.isFinite(Number(payment.amount)) || Number(payment.amount) <= 0 || !['Cash', 'GCash'].includes(payment.method) || !hasValidDate(payment.paidAt))) return false;
-  if (state.expenses.some((expense) => !Number.isFinite(Number(expense.amount)) || Number(expense.amount) <= 0 || typeof expense.category !== 'string' || !expense.category || !hasValidDate(expense.date))) return false;
+  if (state.expenses.some((expense) => !Number.isFinite(Number(expense.amount)) || Number(expense.amount) <= 0 || typeof expense.category !== 'string' || !expense.category || !hasValidDate(expense.date) || (expense.installmentMonths != null && (!Number.isInteger(Number(expense.installmentMonths)) || Number(expense.installmentMonths) < 1)) || (expense.startMonth !== undefined && !hasValidMonth(expense.startMonth)) || (expense.paidMonths !== undefined && (!Array.isArray(expense.paidMonths) || expense.paidMonths.some((paidMonth) => !hasValidMonth(paidMonth)) || new Set(expense.paidMonths).size !== expense.paidMonths.length)))) return false;
   if (state.batches.some((batch) => !Number.isInteger(Number(batch.quantity)) || Number(batch.quantity) < 1 || !hasValidDate(batch.date))) return false;
   if (state.movements.some((movement) => !Number.isFinite(Number(movement.change)) || Number(movement.change) === 0 || typeof movement.material !== 'string' || !movement.material || !hasValidDate(movement.createdAt) || (movement.movementType && !['restock', 'adjustment', 'production'].includes(movement.movementType)))) return false;
 
@@ -58,7 +63,17 @@ function isValidWorkspace(state, previous = null) {
   if (previous) {
     const previousOrders = new Map((previous.orders || []).map((order) => [order.id, order]));
     const previousPayments = new Set((previous.payments || []).map((payment) => payment.id));
-    const newPaymentOrderIds = new Set(state.payments.filter((payment) => !previousPayments.has(payment.id)).map((payment) => payment.orderId));
+    const newPayments = state.payments.filter((payment) => !previousPayments.has(payment.id));
+    const newPaymentOrderIds = new Set(newPayments.map((payment) => payment.orderId));
+    for (const orderId of newPaymentOrderIds) {
+      const oldPayments = (previous.payments || []).filter((payment) => payment.orderId === orderId);
+      if (oldPayments.length !== 1) continue;
+      const addedPayments = newPayments.filter((payment) => payment.orderId === orderId);
+      const order = orders.get(orderId);
+      const oldPaid = oldPayments.reduce((sum, payment) => sum + Number(payment.amount), 0);
+      const remaining = Number(order.total) - oldPaid;
+      if (addedPayments.length !== 1 || Math.abs(Number(addedPayments[0].amount) - remaining) > 0.001) return false;
+    }
     for (const order of state.orders) {
       const oldOrder = previousOrders.get(order.id);
       const paid = paymentTotals.get(order.id) || 0;

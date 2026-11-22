@@ -117,13 +117,14 @@ async function persistWorkspace(connection, state, previous, currentOwnerId) {
   for (const expense of state.expenses) {
     await connection.query(
       `INSERT INTO expense
-        (expense_id, category, description, amount, expense_date, payment_method, receipt_url, created_by_owner_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        (expense_id, category, description, amount, installment_months, start_month, paid_months, expense_date, payment_method, receipt_url, created_by_owner_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE
         category = VALUES(category), description = VALUES(description),
-        amount = VALUES(amount), expense_date = VALUES(expense_date),
+        amount = VALUES(amount), installment_months = VALUES(installment_months),
+        start_month = VALUES(start_month), paid_months = VALUES(paid_months), expense_date = VALUES(expense_date),
         payment_method = VALUES(payment_method), receipt_url = VALUES(receipt_url)`,
-      [expense.id, expense.category, expense.description || null, Number(expense.amount), expense.date, expense.method || null, expense.receipt || null, ownerFor(expense, currentOwnerId)]
+      [expense.id, expense.category, expense.description || null, Number(expense.amount), expense.installmentMonths || null, expense.startMonth || expense.date.slice(0, 7), JSON.stringify(expense.paidMonths || []), expense.date, expense.method || null, expense.receipt || null, ownerFor(expense, currentOwnerId)]
     );
   }
 

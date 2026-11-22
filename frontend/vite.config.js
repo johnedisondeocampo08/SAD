@@ -7,6 +7,7 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
 
   server: {
+    allowedHosts: ['unflawed-matrix-rummage.ngrok-free.dev'],
     proxy: {
       '/api': {
         target: process.env.API_PROXY_TARGET || 'http://localhost:5000',

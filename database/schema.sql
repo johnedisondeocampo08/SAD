@@ -135,7 +135,8 @@ CREATE TABLE IF NOT EXISTS payment (
 -- 7. PRODUCTION BATCH
 CREATE TABLE IF NOT EXISTS production_batch (
     batch_id VARCHAR(20) PRIMARY KEY,
-    item_id VARCHAR(20) NOT NULL,
+    item_id VARCHAR(20),
+    variant_id VARCHAR(20),
     quantity_produced INT NOT NULL,
     produced_at TIMESTAMP NOT NULL
         DEFAULT CURRENT_TIMESTAMP,
@@ -144,6 +145,10 @@ CREATE TABLE IF NOT EXISTS production_batch (
     CONSTRAINT fk_batch_item
         FOREIGN KEY (item_id)
         REFERENCES order_item(item_id),
+
+    CONSTRAINT fk_batch_variant
+        FOREIGN KEY (variant_id)
+        REFERENCES product_variant(variant_id),
 
     CONSTRAINT chk_batch_quantity
         CHECK (quantity_produced > 0)

@@ -17,7 +17,8 @@ The API creates the owner-session and workspace-state tables and applies increme
 - Passwords are stored as salted scrypt hashes. Owner sessions use an HTTP-only, same-site cookie and expire after eight hours.
 - Password recovery validates the owner email and returns a generic delivery message; it never changes the password.
 - Workspace saves update the shared JSON snapshot and normalized business tables in one MySQL transaction. Version checks prevent one owner from silently overwriting newer changes from the other owner.
-- Production batches validate the complete recipe and all material balances before the workspace is updated. Payments enforce a maximum of two receipts per order.
+- Production batches can be made from each product recipe, validate all required material balances, and add finished units to the Products cupboard in Inventory. Existing order-linked batches remain history and do not count as new finished stock.
+- A first payment requires enough finished stock for every order item and reserves those units. Reservations remain unavailable after cancellation. Payments enforce a maximum of two receipts per order.
 - Reports display their selected order-date or due-date basis and exclude shipping from product income.
 
 ## Validation

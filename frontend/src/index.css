@@ -845,14 +845,48 @@ tbody tr:hover {
   background: #eaf2ec;
   color: #5c8068;
 }
-.status-select {
-  max-width: 120px;
-  padding: 5px 6px;
-  border: 1px solid #eee9ed;
-  border-radius: 6px;
-  background: #fff;
-  color: #655c69;
+.order-status-cell {
+  display: flex;
+  min-width: 112px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+.order-status-action {
+  min-height: 27px;
+  padding: 0 9px;
   font-size: 9px;
+}
+.order-cancel-action {
+  border-color: #f0dfda;
+  color: #a45e50;
+}
+.order-cancel-action:hover {
+  border-color: #e4c5bc;
+  background: #fff8f6;
+}
+.payment-row-action {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 9px;
+}
+.payment-paid-action {
+  border-color: #d7e9dc;
+  background: #e9f2ed;
+  color: #55816a;
+  cursor: default;
+}
+.payment-paid-action:hover {
+  transform: none;
+}
+.payment-cancelled-action {
+  border-color: #f0dfda;
+  background: #faece8;
+  color: #ae705e;
+  cursor: default;
+}
+.payment-cancelled-action:hover {
+  transform: none;
 }
 .side-panel {
   padding-bottom: 10px;
@@ -1201,6 +1235,39 @@ tbody tr:hover {
   font-size: 9px;
   text-align: right;
 }
+.recipe-add {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 8px;
+  color: #817a83;
+  font-size: 9px;
+}
+.recipe-add select {
+  min-width: 0;
+  flex: 1;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid #eee9ec;
+  border-radius: 5px;
+  background: white;
+  color: #5e5662;
+  font-size: 9px;
+}
+.recipe-add .button,
+.recipe-add-button {
+  min-height: 30px;
+  padding: 0 9px;
+  font-size: 9px;
+}
+.recipe-add-button {
+  width: 100%;
+  margin-top: 8px;
+}
+.recipe-add-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
 .inventory-panel-actions {
   display: flex;
   align-items: center;
@@ -1357,6 +1424,50 @@ tbody tr:hover {
   margin: 4px 0 0;
   color: #93898d;
   font-size: 9px;
+}
+.production-product-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 0 17px 17px;
+}
+.production-product-card {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #f0ecea;
+  border-radius: 9px;
+  background: #fff;
+}
+.production-product-card > div {
+  min-width: 0;
+  flex: 1;
+}
+.production-product-card strong,
+.production-product-card small {
+  display: block;
+}
+.production-product-card strong {
+  overflow: hidden;
+  color: #514a54;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.production-product-card small {
+  margin-top: 4px;
+  color: #968e96;
+  font-size: 8px;
+}
+.production-product-card .button {
+  min-height: 31px;
+  padding: 0 9px;
+  font-size: 9px;
+}
+.production-material-warning {
+  color: #ae705e !important;
 }
 .waiting-list {
   padding: 0 17px;
@@ -2142,6 +2253,9 @@ tbody tr:hover {
   }
   .main-area {
     margin-left: 0;
+  }
+  .production-product-grid {
+    grid-template-columns: 1fr;
   }
   .topbar {
     position: relative;

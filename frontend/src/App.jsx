@@ -44,6 +44,27 @@ const money = (value) => `₱${Number(value || 0).toLocaleString('en-PH', { mini
 const idFor = (prefix, items) => `${prefix}-${String(items.length + 1).padStart(3, '0')}`;
 const dateLabel = (value) => value ? new Date(`${value}T00:00:00`).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
 
+function productStock(batches, orders, productId) {
+  const produced = batches.filter((batch) => batch.productId === productId).reduce((sum, batch) => sum + Number(batch.quantity), 0);
+  const reserved = orders.filter((order) => order.stockReserved).flatMap((order) => order.items)
+    .filter((item) => item.productId === productId).reduce((sum, item) => sum + Number(item.quantity), 0);
+  return Math.max(0, produced - reserved);
+}
+
+function orderStockShortage(order, products, batches, orders) {
+  if (order.stockReserved) return null;
+  const requiredByProduct = new Map();
+  for (const item of order.items) requiredByProduct.set(item.productId, (requiredByProduct.get(item.productId) || 0) + Number(item.quantity));
+  for (const [productId, required] of requiredByProduct) {
+    const available = productStock(batches, orders, productId);
+    if (available < required) {
+      const product = products.find((entry) => entry.id === productId);
+      return { product: product?.name || 'Product', required, available };
+    }
+  }
+  return null;
+}
+
 function App() {
   const [access, setAccess] = useState({ loading: true, setupRequired: false, owner: null, error: '' });
   const [retry, setRetry] = useState(0);
@@ -213,6 +234,7 @@ function WorkspaceApp({ owner, onSignOut }) {
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [selectedCustomer, setSelectedCustomer] = useState(null);
   const [selectedMaterial, setSelectedMaterial] = useState(null);
+  const [selectedProduct, setSelectedProduct] = useState(null);
   const [month, setMonth] = useState(today.slice(0, 7));
   const [basis, setBasis] = useState('order');
   const [loaded, setLoaded] = useState(false);
@@ -228,7 +250,19 @@ function WorkspaceApp({ owner, onSignOut }) {
       .then((result) => {
         if (!activeRequest) return;
         workspaceVersion.current = result.version;
-        if (result.data) setData({ ...initialState, ...result.data });
+        if (result.data) {
+          const workspace = { ...initialState, ...result.data };
+          workspace.orders = workspace.orders.map((order) => {
+            const paid = workspace.payments.filter((payment) => payment.orderId === order.id).reduce((sum, payment) => sum + Number(payment.amount), 0);
+            const isPaid = paid >= Number(order.total);
+            return {
+              ...order,
+              paymentStatus: isPaid ? 'Paid' : paid > 0 ? 'Partial' : 'Unpaid',
+              status: order.status === 'Cancelled' ? 'Cancelled' : isPaid && order.status === 'Delivered' ? 'Delivered' : isPaid ? 'In production' : 'Pending',
+            };
+          });
+          setData(workspace);
+        }
         setLoaded(true);
       })
       .catch((error) => {
@@ -260,8 +294,8 @@ function WorkspaceApp({ owner, onSignOut }) {
   }, [notice]);
 
   const lowStock = data.materials.filter((material) => material.active && material.stock <= material.threshold);
-  const outstanding = data.orders.reduce((sum, order) => sum + Math.max(0, order.total - data.payments.filter((payment) => payment.orderId === order.id).reduce((total, payment) => total + Number(payment.amount), 0)), 0);
-  const monthOrders = data.orders.filter((order) => (basis === 'order' ? order.date : order.dueDate || order.date)?.startsWith(month));
+  const outstanding = data.orders.filter((order) => order.status !== 'Cancelled').reduce((sum, order) => sum + Math.max(0, order.total - data.payments.filter((payment) => payment.orderId === order.id).reduce((total, payment) => total + Number(payment.amount), 0)), 0);
+  const monthOrders = data.orders.filter((order) => order.status !== 'Cancelled' && (basis === 'order' ? order.date : order.dueDate || order.date)?.startsWith(month));
   const monthRevenue = monthOrders.reduce((sum, order) => sum + order.items.reduce((lineSum, item) => lineSum + item.quantity * item.price, 0), 0);
   const monthCandles = monthOrders.reduce((sum, order) => sum + order.items.filter((item) => item.type === 'Candle').reduce((lineSum, item) => lineSum + item.quantity * item.price, 0), 0);
   const monthSouvenirs = monthOrders.reduce((sum, order) => sum + order.items.filter((item) => item.type === 'Souvenir').reduce((lineSum, item) => lineSum + item.quantity * item.price, 0), 0);
@@ -347,6 +381,7 @@ function WorkspaceApp({ owner, onSignOut }) {
     const original = data.orders.find((order) => order.id === id);
     const customer = data.customers.find((entry) => entry.id === form.customerId);
     if (!original || !customer || !Array.isArray(form.items) || form.items.length === 0) return 'Choose a customer and at least one product.';
+    if (['Cancelled', 'Delivered'].includes(original.status)) return 'Cancelled or delivered orders cannot be edited.';
     const items = form.items.map((line) => {
       const product = data.products.find((entry) => entry.id === line.productId);
       return { product, quantity: Number(line.quantity), price: Number(line.price || product?.price), id: line.id };
@@ -356,6 +391,10 @@ function WorkspaceApp({ owner, onSignOut }) {
     const shipping = Number(form.shipping);
     if (!Number.isFinite(shipping) || shipping < 0) return 'Shipping fee cannot be negative.';
     const orderItems = items.map(({ product, quantity, price, id: itemId }, index) => ({ id: itemId || `${id}-item-${index + 1}`, productId: product.id, name: product.name, type: product.type, quantity, price }));
+    if (original.stockReserved && (original.items.length !== orderItems.length || original.items.some((item) => {
+      const updatedItem = orderItems.find((entry) => entry.id === item.id);
+      return !updatedItem || updatedItem.productId !== item.productId || Number(updatedItem.quantity) !== Number(item.quantity);
+    }))) return 'This order has reserved finished products. Its products and quantities cannot be changed.';
     for (const previousItem of original.items) {
       const produced = data.batches.filter((batch) => batch.itemId === previousItem.id).reduce((sum, batch) => sum + Number(batch.quantity), 0);
       if (produced > 0) {
@@ -366,7 +405,31 @@ function WorkspaceApp({ owner, onSignOut }) {
     const total = orderItems.reduce((sum, item) => sum + item.quantity * item.price, 0) + shipping;
     const paid = data.payments.filter((payment) => payment.orderId === id).reduce((sum, payment) => sum + Number(payment.amount), 0);
     if (total < paid) return `The new order total cannot be less than payments already recorded (${money(paid)}).`;
-    update({ orders: data.orders.map((order) => order.id === id ? { ...order, customerId: customer.id, customer: customer.name, date: form.date, dueDate: form.dueDate, items: orderItems, shipping, total } : order) });
+    const fullyPaid = paid >= total;
+    if (fullyPaid && !original.stockReserved) {
+      const requirements = new Map();
+      for (const item of orderItems) requirements.set(item.productId, (requirements.get(item.productId) || 0) + Number(item.quantity));
+      for (const [productId, required] of requirements) {
+        const available = productStock(data.batches, data.orders, productId);
+        if (available < required) {
+          const product = data.products.find((entry) => entry.id === productId);
+          return `Not enough ${product?.name || 'finished product'} in inventory. Needed ${required}; available ${available}. Produce the missing items first.`;
+        }
+      }
+    }
+    update({ orders: data.orders.map((order) => order.id === id ? {
+      ...order,
+      customerId: customer.id,
+      customer: customer.name,
+      date: form.date,
+      dueDate: form.dueDate,
+      items: orderItems,
+      shipping,
+      total,
+      paymentStatus: fullyPaid ? 'Paid' : paid > 0 ? 'Partial' : 'Unpaid',
+      status: fullyPaid ? 'In production' : 'Pending',
+      stockReserved: order.stockReserved || fullyPaid,
+    } : order) });
     flash(`${id} updated successfully.`);
     return '';
   }
@@ -387,14 +450,10 @@ function WorkspaceApp({ owner, onSignOut }) {
   }
 
   function recordProduction(form) {
-    const order = data.orders.find((entry) => entry.items.some((item) => item.id === form.itemId));
-    const item = order?.items.find((entry) => entry.id === form.itemId);
-    const product = data.products.find((entry) => entry.id === item?.productId);
+    const product = data.products.find((entry) => entry.id === form.productId);
     const quantity = Number(form.quantity);
-    if (!order || !product) return 'Choose a valid order item to produce.';
-    const previouslyProduced = data.batches.filter((batch) => batch.itemId === item.id).reduce((sum, batch) => sum + Number(batch.quantity), 0);
-    const remaining = item.quantity - previouslyProduced;
-    if (!Number.isInteger(quantity) || quantity < 1 || quantity > remaining) return `Enter a quantity from 1 to ${remaining}.`;
+    if (!product) return 'Choose a valid product to make.';
+    if (!Number.isInteger(quantity) || quantity < 1) return 'Enter a whole-number quantity of at least one.';
     if (!product.recipe.length) return 'Set up material usage for this product before recording production.';
     const deductions = product.recipe.map((use) => {
       const material = data.materials.find((entry) => entry.name === use.material && entry.active);
@@ -402,7 +461,7 @@ function WorkspaceApp({ owner, onSignOut }) {
     });
     const missing = deductions.find((entry) => !entry.material || entry.material.stock < entry.quantity);
     if (missing) return missing.material ? `Not enough ${missing.material.name}. Needed ${missing.quantity.toFixed(3)} ${missing.material.unit}; available ${missing.material.stock} ${missing.material.unit}. No stock was changed.` : 'A recipe material is missing or inactive. Update the product recipe first.';
-    const batch = { id: idFor('B', data.batches), orderId: order.id, itemId: item.id, product: product.name, quantity, date: new Date().toISOString(), createdBy: ownerName };
+    const batch = { id: idFor('B', data.batches), productId: product.id, product: product.name, quantity, date: new Date().toISOString(), createdBy: ownerName };
     const movements = deductions.map(({ material, quantity: used }, index) => ({ id: `${idFor('MV', data.movements)}-${index + 1}`, materialId: material.id, material: material.name, change: -used, movementType: 'production', reason: `Production ${batch.id} · ${quantity} × ${product.name}`, createdAt: batch.date, createdBy: ownerName }));
     update({
       materials: data.materials.map((material) => {
@@ -411,9 +470,8 @@ function WorkspaceApp({ owner, onSignOut }) {
       }),
       batches: [batch, ...data.batches],
       movements: [...movements, ...data.movements],
-      orders: data.orders.map((entry) => entry.id === order.id ? { ...entry, status: 'In production' } : entry),
     });
-    flash(`Production batch ${batch.id} recorded. Material deductions were applied together.`);
+    flash(`Made ${quantity} × ${product.name}. Materials were checked and deducted together.`);
     return '';
   }
 
@@ -423,14 +481,29 @@ function WorkspaceApp({ owner, onSignOut }) {
     const alreadyPaid = existing.reduce((sum, payment) => sum + Number(payment.amount), 0);
     const amount = Number(form.amount);
     if (!order) return 'Choose an order before recording payment.';
+    if (order.status === 'Cancelled') return 'Cancelled orders cannot receive additional payments.';
     if (existing.length >= 2) return 'This order already has two receipts. The maximum is two payments per order.';
+    if (!order.stockReserved) {
+      const requirements = new Map();
+      for (const item of order.items) requirements.set(item.productId, (requirements.get(item.productId) || 0) + Number(item.quantity));
+      for (const [productId, required] of requirements) {
+        const product = data.products.find((entry) => entry.id === productId);
+        const available = productStock(data.batches, data.orders, productId);
+        if (available < required) return `Not enough ${product?.name || 'finished product'} in inventory. Needed ${required}; available ${available}. Produce the missing items before recording payment.`;
+      }
+    }
     if (!Number.isFinite(amount) || amount <= 0) return 'Payment must be greater than zero.';
     if (amount > order.total - alreadyPaid + 0.001) return `Payment exceeds the remaining balance of ${money(order.total - alreadyPaid)}.`;
     const payment = { ...form, id: idFor('PAY', data.payments), amount, paidAt: new Date().toISOString(), createdBy: ownerName };
     const newPaid = alreadyPaid + amount;
     update({
       payments: [payment, ...data.payments],
-      orders: data.orders.map((entry) => entry.id === order.id ? { ...entry, paymentStatus: newPaid >= entry.total ? 'Paid' : 'Partial' } : entry),
+      orders: data.orders.map((entry) => entry.id === order.id ? {
+        ...entry,
+        paymentStatus: newPaid >= entry.total ? 'Paid' : 'Partial',
+        status: newPaid >= entry.total ? 'In production' : 'Pending',
+        stockReserved: true,
+      } : entry),
     });
     flash(`Payment recorded. Remaining balance: ${money(order.total - newPaid)}.`);
     return '';
@@ -445,8 +518,29 @@ function WorkspaceApp({ owner, onSignOut }) {
     return '';
   }
 
-  function updateOrder(id, patch) {
-    update({ orders: data.orders.map((order) => order.id === id ? { ...order, ...patch } : order) });
+  function updateOrderStatus(id, status) {
+    const order = data.orders.find((entry) => entry.id === id);
+    if (!order || ['Cancelled', 'Delivered'].includes(order.status)) return;
+    const paid = data.payments.filter((payment) => payment.orderId === id).reduce((sum, payment) => sum + Number(payment.amount), 0);
+    if (status === 'Cancelled' && paid < Number(order.total)) {
+      update({ orders: data.orders.map((entry) => entry.id === id ? { ...entry, status } : entry) });
+      flash(`${id} cancelled. Existing receipts were kept; no more payments can be recorded.`);
+    } else if (status === 'Delivered' && order.status === 'In production' && paid >= Number(order.total)) {
+      if (!order.stockReserved) {
+        const requirements = new Map();
+        for (const item of order.items) requirements.set(item.productId, (requirements.get(item.productId) || 0) + Number(item.quantity));
+        for (const [productId, required] of requirements) {
+          const available = productStock(data.batches, data.orders, productId);
+          if (available < required) {
+            const product = data.products.find((entry) => entry.id === productId);
+            flash(`Not enough ${product?.name || 'finished product'} in inventory to deliver ${id}. Produce the missing items first.`);
+            return;
+          }
+        }
+      }
+      update({ orders: data.orders.map((entry) => entry.id === id ? { ...entry, status, stockReserved: true } : entry) });
+      flash(`${id} marked as delivered.`);
+    }
   }
 
   function updateRecipe(productId, materialName, rawValue) {
@@ -479,7 +573,13 @@ function WorkspaceApp({ owner, onSignOut }) {
           <span><strong>simula studio</strong><small>OWNER WORKSPACE</small></span>
         </a>
         <div className="nav-caption">WORKSPACE</div>
-        <nav className="main-nav" aria-label="Main navigation">
+        <nav className="main-nav" aria-label="Main navigation" onWheel={(event) => {
+          const navElement = event.currentTarget;
+          if (navElement.scrollWidth > navElement.clientWidth) {
+            event.preventDefault();
+            navElement.scrollLeft += event.deltaY;
+          }
+        }}>
           {nav.map(([label, icon]) => (
             <button key={label} type="button" className={`nav-item ${active === label ? 'active' : ''}`} onClick={() => { setActive(label); setSearch(''); }}>
               <span className="nav-icon">{icon}</span><span>{label}</span>
@@ -488,7 +588,6 @@ function WorkspaceApp({ owner, onSignOut }) {
           ))}
         </nav>
         <div className="sidebar-bottom">
-          <div className="studio-note"><span className="note-spark">✦</span><strong>Made with care</strong><p>A little studio, a lot of heart.</p></div>
           <div className="profile-row"><span className="avatar">{ownerName.split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase()}</span><span className="profile-name"><strong>{ownerName}</strong><small>Owner account</small></span><button className="profile-signout" onClick={onSignOut}>Sign out</button></div>
           <span className={`local-save ${saveError ? 'save-error' : ''}`}><i /> {saveError ? 'Not saved · check connection' : 'Saved to your studio database'}</span>
         </div>
@@ -523,21 +622,21 @@ function WorkspaceApp({ owner, onSignOut }) {
 
           {active === 'Overview' && <Dashboard data={data} lowStock={lowStock} outstanding={outstanding} setActive={setActive} setModal={setModal} />}
           {active === 'Customers' && <CustomersPage customers={filteredCustomers} search={search} setSearch={setSearch} onPrint={printRecord} onEdit={(customer) => { setSelectedCustomer(customer); setModal('customer'); }} />}
-          {active === 'Orders' && <OrdersPage orders={filteredOrders} data={data} search={search} setSearch={setSearch} onUpdate={updateOrder} onEdit={(order) => { setSelectedOrder(order); setModal('order'); }} onPrint={(order) => { setSelectedOrder(order); setModal('slip'); }} />}
+          {active === 'Orders' && <OrdersPage orders={filteredOrders} data={data} search={search} setSearch={setSearch} onUpdate={updateOrderStatus} onEdit={(order) => { setSelectedOrder(order); setModal('order'); }} onPrint={(order) => { setSelectedOrder(order); setModal('slip'); }} />}
           {active === 'Products' && <ProductsPage products={data.products} materials={data.materials} onRecipe={updateRecipe} />}
-          {active === 'Inventory' && <InventoryPage materials={data.materials} movements={data.movements} lowStock={lowStock} onAdd={() => { setSelectedMaterial(null); setModal('material'); }} onEdit={(material) => { setSelectedMaterial(material); setModal('material'); }} />}
-          {active === 'Production' && <ProductionPage batches={data.batches} orders={data.orders} products={data.products} />}
-          {active === 'Payments' && <PaymentsPage orders={data.orders} payments={data.payments} />}
+          {active === 'Inventory' && <InventoryPage materials={data.materials} movements={data.movements} lowStock={lowStock} products={data.products} batches={data.batches} orders={data.orders} onAdd={() => { setSelectedMaterial(null); setModal('material'); }} onEdit={(material) => { setSelectedMaterial(material); setModal('material'); }} />}
+          {active === 'Production' && <ProductionPage batches={data.batches} orders={data.orders} products={data.products} materials={data.materials} onCreate={(product) => { setSelectedProduct(product); setModal('production'); }} />}
+          {active === 'Payments' && <PaymentsPage orders={data.orders} payments={data.payments} products={data.products} batches={data.batches} onRecordPayment={(order) => { setSelectedOrder(order); setModal('payment'); }} />}
           {active === 'Expenses' && <ExpensesPage expenses={data.expenses} />}
           {active === 'Reports' && <ReportsPage month={month} setMonth={setMonth} basis={basis} setBasis={setBasis} orders={monthOrders} candles={monthCandles} souvenirs={monthSouvenirs} total={monthRevenue} expenses={data.expenses.filter((expense) => expense.date?.startsWith(month)).reduce((sum, expense) => sum + Number(expense.amount), 0)} />}
           <footer className="app-footer"><span>Simula Studio <span className="footer-dot">·</span> Est. April 2, 2026</span><span>Made for the little things that mean a lot.</span></footer>
         </div>
       </main>
-      {modal && <Modal type={modal} data={data} selectedOrder={selectedOrder} selectedCustomer={selectedCustomer} selectedMaterial={selectedMaterial} onClose={() => { setModal(''); setSelectedOrder(null); setSelectedCustomer(null); setSelectedMaterial(null); }} onSave={(form) => {
+      {modal && <Modal type={modal} data={data} selectedOrder={selectedOrder} selectedCustomer={selectedCustomer} selectedMaterial={selectedMaterial} selectedProduct={selectedProduct} onClose={() => { setModal(''); setSelectedOrder(null); setSelectedCustomer(null); setSelectedMaterial(null); setSelectedProduct(null); }} onSave={(form) => {
         const actions = { customer: selectedCustomer ? (values) => updateCustomer(selectedCustomer.id, values) : addCustomer, product: addProduct, order: selectedOrder ? (values) => updateOrderDetails(selectedOrder.id, values) : addOrder, stock: saveStock, material: saveMaterial, production: recordProduction, payment: recordPayment, expense: recordExpense };
         if (modal === 'slip') { printRecord(); return ''; }
         const error = actions[modal]?.(form);
-        if (!error) { setModal(''); setSelectedOrder(null); setSelectedCustomer(null); setSelectedMaterial(null); }
+        if (!error) { setModal(''); setSelectedOrder(null); setSelectedCustomer(null); setSelectedMaterial(null); setSelectedProduct(null); }
         return error;
       }} />}
     </div>
@@ -561,7 +660,7 @@ function pageSubtitle(active) {
 
 function Dashboard({ data, lowStock, outstanding, setActive, setModal }) {
   const openOrders = data.orders.filter((order) => !['Delivered', 'Cancelled'].includes(order.status));
-  const thisMonthOrders = data.orders.filter((order) => order.date?.startsWith(today.slice(0, 7)));
+  const thisMonthOrders = data.orders.filter((order) => order.status !== 'Cancelled' && order.date?.startsWith(today.slice(0, 7)));
   const earned = thisMonthOrders.reduce((sum, order) => sum + order.items.reduce((lineSum, item) => lineSum + item.quantity * item.price, 0), 0);
   const recentOrders = data.orders.slice(0, 5);
   return (
@@ -609,39 +708,91 @@ function CustomersPage({ customers, search, setSearch, onPrint, onEdit }) {
 function OrdersPage({ orders, data, search, setSearch, onUpdate, onEdit, onPrint }) {
   const [filter, setFilter] = useState('All orders');
   const visible = orders.filter((order) => filter === 'All orders' || order.status === filter);
-  return <><div className="toolbar"><SearchInput value={search} onChange={setSearch} placeholder="Search order or customer" /><select className="select-control" value={filter} onChange={(e) => setFilter(e.target.value)}><option>All orders</option>{['Pending', 'In production', 'Ready', 'Paid', 'Delivered', 'Cancelled'].map((status) => <option key={status}>{status}</option>)}</select></div>
+  return <><div className="toolbar"><SearchInput value={search} onChange={setSearch} placeholder="Search order or customer" /><select className="select-control" value={filter} onChange={(e) => setFilter(e.target.value)}><option>All orders</option>{['Pending', 'In production', 'Delivered', 'Cancelled'].map((status) => <option key={status}>{status}</option>)}</select></div>
     <section className="panel data-panel"><div className="panel-heading"><div><h3>Order book</h3><p>{visible.length} orders · shipping is shown separately from item sales.</p></div></div>
-      {visible.length ? <div className="table-scroll"><table><thead><tr><th>ORDER</th><th>CUSTOMER</th><th>ORDER DATE</th><th>DUE DATE</th><th>STATUS</th><th>PAYMENT</th><th>TOTAL</th><th>ACTIONS</th></tr></thead><tbody>{visible.map((order) => <tr key={order.id}><td className="strong-cell">{order.id}<small className="table-sub">{order.items.map((item) => `${item.quantity} × ${item.name}`).join(', ')}</small></td><td>{order.customer}</td><td>{dateLabel(order.date)}</td><td>{dateLabel(order.dueDate)}</td><td><select className="status-select" value={order.status} onChange={(e) => onUpdate(order.id, { status: e.target.value })}>{['Pending', 'In production', 'Ready', 'Paid', 'Delivered', 'Cancelled'].map((status) => <option key={status}>{status}</option>)}</select></td><td><Status value={order.paymentStatus || 'Unpaid'} /></td><td>{money(order.total)}<small className="table-sub">Items {money(order.items.reduce((sum, item) => sum + item.quantity * item.price, 0))} + shipping {money(order.shipping)}</small></td><td><div className="table-actions"><button className="text-link" onClick={() => onEdit(order)}>Edit</button><button className="small-icon-button" aria-label={`Print ${order.id}`} onClick={() => onPrint(order)}><Icon name="print" /></button></div></td></tr>)}</tbody></table></div> : <EmptyState title={search ? 'No matching orders' : 'Your order book is empty'} detail={search ? 'Try another order number or customer name.' : 'Orders, due dates, payments, and printable slips will live here.'} />}</section>
+      {visible.length ? <div className="table-scroll"><table><thead><tr><th>ORDER</th><th>CUSTOMER</th><th>ORDER DATE</th><th>DUE DATE</th><th>STATUS</th><th>PAYMENT</th><th>TOTAL</th><th>ACTIONS</th></tr></thead><tbody>{visible.map((order) => {
+        const shortage = orderStockShortage(order, data.products, data.batches, data.orders);
+        return <tr key={order.id}><td className="strong-cell">{order.id}<small className="table-sub">{order.items.map((item) => `${item.quantity} × ${item.name}`).join(', ')}</small></td><td>{order.customer}</td><td>{dateLabel(order.date)}</td><td>{dateLabel(order.dueDate)}</td><td><div className="order-status-cell"><Status value={order.status} />{order.status === 'Pending' && <button className="button button-secondary order-status-action order-cancel-action" onClick={() => onUpdate(order.id, 'Cancelled')}>Cancel</button>}{order.status === 'In production' && <button className="button button-secondary order-status-action" disabled={Boolean(shortage)} title={shortage ? `Produce ${shortage.required - shortage.available} more ${shortage.product} first.` : undefined} onClick={() => onUpdate(order.id, 'Delivered')}>{shortage ? 'Produce first' : 'Delivered'}</button>}</div></td><td><Status value={order.paymentStatus || 'Unpaid'} /></td><td>{money(order.total)}<small className="table-sub">Items {money(order.items.reduce((sum, item) => sum + item.quantity * item.price, 0))} + shipping {money(order.shipping)}</small></td><td><div className="table-actions"><button className="text-link" onClick={() => onEdit(order)}>Edit</button><button className="small-icon-button" aria-label={`Print ${order.id}`} onClick={() => onPrint(order)}><Icon name="print" /></button></div></td></tr>;
+      })}</tbody></table></div> : <EmptyState title={search ? 'No matching orders' : 'Your order book is empty'} detail={search ? 'Try another order number or customer name.' : 'Orders, due dates, payments, and printable slips will live here.'} />}</section>
     <p className="helper-note">Payment balance is calculated from recorded GCash and cash receipts. {data.orders.length > 0 && `${data.orders.length} orders in your studio.`}</p>
   </>;
 }
 
 function ProductsPage({ products, materials, onRecipe }) {
-  return <div className="product-grid">{products.map((product) => <article className="product-card" key={product.id}><div className={`product-art ${product.type === 'Candle' ? 'product-candle' : 'product-souvenir'}`}><span>{product.type === 'Candle' ? '✹' : '✿'}</span><small>{product.type}</small></div><div className="product-copy"><div className="product-title"><div><span className="product-type">{product.type.toUpperCase()}</span><h3>{product.name}</h3></div><strong>{money(product.price)}</strong></div><div className="recipe-heading"><span>Material usage · per item</span><span>{product.recipe.length} materials</span></div><div className="recipe-list">{materials.filter((material) => material.active).map((material) => { const usage = product.recipe.find((entry) => entry.material === material.name); return <label className="recipe-row" key={material.id}><span>{material.name} <small>({material.unit})</small></span><input aria-label={`${material.name} usage per ${product.name}`} type="number" min="0" step="0.001" defaultValue={usage?.quantity ?? ''} placeholder="—" onBlur={(e) => onRecipe(product.id, material.name, e.target.value)} /><small>{usage ? material.unit : 'not used'}</small></label>; })}</div></div></article>)}</div>;
+  return <div className="product-grid">{products.map((product) => <ProductCard key={product.id} product={product} materials={materials} onRecipe={onRecipe} />)}</div>;
 }
 
-function InventoryPage({ materials, movements, lowStock, onAdd, onEdit }) {
+function ProductCard({ product, materials, onRecipe }) {
+  const [isAddingMaterial, setIsAddingMaterial] = useState(false);
+  const [addingMaterialId, setAddingMaterialId] = useState('');
+  const [newQuantity, setNewQuantity] = useState('');
+  const usedMaterialNames = new Set(product.recipe.map((entry) => entry.material));
+  const availableMaterials = materials.filter((material) => material.active && !usedMaterialNames.has(material.name));
+  const pendingMaterial = materials.find((material) => material.id === addingMaterialId);
+  const recipeMaterials = product.recipe.map((usage) => ({
+    usage,
+    material: materials.find((entry) => entry.name === usage.material),
+  }));
+
+  function finishAddingMaterial() {
+    const quantity = Number(newQuantity);
+    if (pendingMaterial && Number.isFinite(quantity) && quantity > 0) {
+      onRecipe(product.id, pendingMaterial.name, newQuantity);
+    }
+    setIsAddingMaterial(false);
+    setAddingMaterialId('');
+    setNewQuantity('');
+  }
+
+  return <article className="product-card">
+    <div className={`product-art ${product.type === 'Candle' ? 'product-candle' : 'product-souvenir'}`}><span>{product.type === 'Candle' ? '✹' : '✿'}</span><small>{product.type}</small></div>
+    <div className="product-copy">
+      <div className="product-title"><div><span className="product-type">{product.type.toUpperCase()}</span><h3>{product.name}</h3></div><strong>{money(product.price)}</strong></div>
+      <div className="recipe-heading"><span>Material usage · per item</span><span>{product.recipe.length} materials</span></div>
+      <div className="recipe-list">
+        {recipeMaterials.map(({ usage, material }) => <label className="recipe-row" key={usage.material}>
+          <span>{usage.material} {material && <small>({material.unit})</small>}</span>
+          <input aria-label={`${usage.material} usage per ${product.name}`} type="number" min="0" step="0.001" defaultValue={usage.quantity} onBlur={(event) => onRecipe(product.id, usage.material, event.target.value)} />
+          <small>{material?.unit || 'inactive'}</small>
+        </label>)}
+        {isAddingMaterial && pendingMaterial && <label className="recipe-row">
+          <span>{pendingMaterial.name} <small>({pendingMaterial.unit})</small></span>
+          <input aria-label={`${pendingMaterial.name} usage per ${product.name}`} type="number" min="0.001" step="0.001" value={newQuantity} onChange={(event) => setNewQuantity(event.target.value)} onBlur={finishAddingMaterial} />
+          <small>{pendingMaterial.unit}</small>
+        </label>}
+      </div>
+      {isAddingMaterial && availableMaterials.length > 0 ? <div className="recipe-add">
+        {pendingMaterial ? <span>{pendingMaterial.name} selected</span> : <select aria-label={`Choose a material for ${product.name}`} value={addingMaterialId} onChange={(event) => { setAddingMaterialId(event.target.value); setNewQuantity(''); }}>
+          <option value="">Choose a material</option>
+          {availableMaterials.map((material) => <option key={material.id} value={material.id}>{material.name}</option>)}
+        </select>}
+        <button className="button button-secondary" type="button" onClick={() => { setIsAddingMaterial(false); setAddingMaterialId(''); setNewQuantity(''); }}>Cancel</button>
+      </div> : <button className="button button-secondary recipe-add-button" type="button" disabled={!availableMaterials.length} onClick={() => { setIsAddingMaterial(true); setAddingMaterialId(''); }}>
+        + Add materials usage
+      </button>}
+    </div>
+  </article>;
+}
+
+function InventoryPage({ materials, movements, lowStock, products, batches, orders, onAdd, onEdit }) {
   return <><div className="inventory-summary"><div className="inventory-summary-icon">✿</div><div><strong>{lowStock.length ? `${lowStock.length} materials need a little restock` : 'Your materials are in good shape'}</strong><span>{lowStock.length ? 'Low-stock items are highlighted below.' : 'You’ll see a heads-up here when anything runs low.'}</span></div><span className="summary-count">{lowStock.length} LOW</span></div>
-    <section className="panel data-panel"><div className="panel-heading"><div><h3>Materials cupboard</h3><p>Raw materials only · finished pieces are made to order.</p></div><div className="inventory-panel-actions"><span className="soft-chip">{materials.filter((m) => m.active).length} active materials</span><button className="button button-secondary" onClick={onAdd}><Icon name="plus" /> Add material</button></div></div>
+    <section className="panel data-panel"><div className="panel-heading"><div><h3>Materials cupboard</h3><p>Raw materials are tracked here; finished products are listed below.</p></div><div className="inventory-panel-actions"><span className="soft-chip">{materials.filter((m) => m.active).length} active materials</span><button className="button button-secondary" onClick={onAdd}><Icon name="plus" /> Add material</button></div></div>
       {materials.length ? <div className="table-scroll"><table><thead><tr><th>MATERIAL</th><th>ON HAND</th><th>LOW-STOCK AT</th><th>UNIT COST</th><th>STATUS</th><th>ACTION</th></tr></thead><tbody>{materials.map((m) => <tr key={m.id}><td><span className="material-name-dot"><i />{m.name}</span></td><td className="strong-cell">{m.stock} {m.unit}</td><td>{m.threshold} {m.unit}</td><td>{money(m.price)} / {m.unit}</td><td>{!m.active ? <span className="soft-chip">Inactive</span> : m.stock <= m.threshold ? <span className="status-badge status-low">Restock soon</span> : <span className="status-badge status-healthy">In stock</span>}</td><td><button className="text-link" onClick={() => onEdit(m)}>Edit</button></td></tr>)}</tbody></table></div> : <EmptyState title="No materials added yet" detail="Add your wax, jars, paper, and other materials to track stock." />}</section>
+    <section className="panel data-panel"><div className="panel-heading"><div><h3>Products cupboard</h3><p>Finished products available after production, minus units reserved for orders.</p></div></div>{products.length ? <div className="table-scroll"><table><thead><tr><th>PRODUCT</th><th>TYPE</th><th>AVAILABLE</th></tr></thead><tbody>{products.map((product) => <tr key={product.id}><td className="strong-cell">{product.name}</td><td>{product.type}</td><td className="strong-cell">{productStock(batches, orders, product.id)}</td></tr>)}</tbody></table></div> : <EmptyState title="No products yet" detail="Add a product before recording production." />}</section>
     <section className="panel data-panel movement-panel"><div className="panel-heading"><div><h3>Recent stock movements</h3><p>Every restock and production deduction, in one place.</p></div></div>{movements.length ? <div className="movement-list">{movements.slice(0, 8).map((movement) => <div className="movement-row" key={movement.id}><span className={`movement-sign ${movement.change > 0 ? 'positive' : 'negative'}`}>{movement.change > 0 ? '+' : '−'}</span><span><strong>{movement.material}</strong><small>{movement.reason} · {new Date(movement.createdAt).toLocaleDateString('en-PH')}</small></span><b>{movement.change > 0 ? '+' : ''}{Number(movement.change).toFixed(3)}</b></div>)}</div> : <EmptyState title="No stock movements yet" detail="Restocks and production batches will show up here." />}</section>
   </>;
 }
 
-function ProductionPage({ batches, orders, products }) {
-  const queue = orders.filter((order) => !['Delivered', 'Cancelled'].includes(order.status)).flatMap((order) => order.items.map((item) => {
-    const produced = batches.filter((batch) => batch.itemId === item.id).reduce((sum, batch) => sum + Number(batch.quantity), 0);
-    return { order, item, remaining: item.quantity - produced };
-  })).filter((entry) => entry.remaining > 0);
-  return <><section className="production-intro"><span className="production-icon">⚒</span><div><strong>Made to order, made with love.</strong><p>Recording a batch checks all material needs first, then deducts everything together.</p></div></section>
-    <section className="panel data-panel"><div className="panel-heading"><div><h3>Production batches</h3><p>Raw material usage is linked to each order item.</p></div></div>{batches.length ? <div className="table-scroll"><table><thead><tr><th>BATCH</th><th>ORDER</th><th>PRODUCT</th><th>QUANTITY</th><th>RECORDED</th></tr></thead><tbody>{batches.map((batch) => <tr key={batch.id}><td className="strong-cell">{batch.id}</td><td>{batch.orderId}</td><td>{batch.product}</td><td>{batch.quantity}</td><td>{new Date(batch.date).toLocaleString('en-PH')}</td></tr>)}</tbody></table></div> : <EmptyState title="Your first batch is waiting" detail={orders.length ? 'Pick an order item to start production. Product recipes are configurable in Products.' : 'Create an order first, then record its production here.'} />}</section>
-    <section className="panel data-panel"><div className="panel-heading"><div><h3>Waiting to be made</h3><p>Open order items with a production recipe.</p></div></div>{queue.length ? <div className="waiting-list">{queue.map(({ order, item, remaining }) => { const product = products.find((entry) => entry.id === item.productId); return <div className="waiting-item" key={item.id}><span className="waiting-icon">✳</span><span><strong>{order.id} · {item.name}</strong><small>{order.customer} · {remaining} of {item.quantity} remaining · {product?.recipe.length || 0} recipe materials</small></span><Status value={order.status} /></div>; })}</div> : <EmptyState title="Nothing in the production queue" detail="New orders will appear here when they’re ready to make." />}</section>
+function ProductionPage({ batches, orders, products, materials, onCreate }) {
+  return <><section className="production-intro"><span className="production-icon">⚒</span><div><strong>Make products before taking payment.</strong><p>Each batch checks raw materials, deducts them, and adds finished items to the Products cupboard.</p></div></section>
+    <section className="panel data-panel"><div className="panel-heading"><div><h3>Product collection</h3><p>Choose a product to make and add finished units to inventory.</p></div></div><div className="production-product-grid">{products.map((product) => { const missing = product.recipe.find((use) => { const material = materials.find((entry) => entry.name === use.material && entry.active); return !material || material.stock < Number(use.quantity); }); return <article className="production-product-card" key={product.id}><span className="production-icon">✿</span><div><strong>{product.name}</strong><small>{product.type} · {productStock(batches, orders, product.id)} available</small>{!product.recipe.length ? <small className="production-material-warning">Add material usage in Products first</small> : missing && <small className="production-material-warning">{missing.material} is unavailable or low</small>}</div><button className="button button-primary" type="button" onClick={() => onCreate(product)}>Create product</button></article>; })}</div></section>
+    <section className="panel data-panel"><div className="panel-heading"><div><h3>Production batches</h3><p>History of finished goods created from your product recipes.</p></div></div>{batches.length ? <div className="table-scroll"><table><thead><tr><th>BATCH</th><th>SOURCE</th><th>PRODUCT</th><th>QUANTITY</th><th>RECORDED</th></tr></thead><tbody>{batches.map((batch) => <tr key={batch.id}><td className="strong-cell">{batch.id}</td><td>{batch.orderId || 'Product stock'}</td><td>{batch.product}</td><td>{batch.quantity}</td><td>{new Date(batch.date).toLocaleString('en-PH')}</td></tr>)}</tbody></table></div> : <EmptyState title="No production batches yet" detail="Choose a product above to make your first batch." />}</section>
   </>;
 }
 
-function PaymentsPage({ orders, payments }) {
-  return <><section className="payment-summary-grid"><SummaryTile label="Payments collected" value={money(payments.reduce((sum, payment) => sum + Number(payment.amount), 0))} note={`${payments.length} receipts recorded`} /><SummaryTile label="Still to collect" value={money(orders.reduce((sum, order) => sum + Math.max(0, order.total - payments.filter((payment) => payment.orderId === order.id).reduce((paid, payment) => paid + Number(payment.amount), 0)), 0))} note="Across all open balances" /></section>
-    <section className="panel data-panel"><div className="panel-heading"><div><h3>Order balances</h3><p>Up to two GCash or cash receipts per order.</p></div></div>{orders.length ? <div className="table-scroll"><table><thead><tr><th>ORDER</th><th>CUSTOMER</th><th>ORDER TOTAL</th><th>PAID</th><th>BALANCE</th><th>RECEIPTS</th><th>STATUS</th></tr></thead><tbody>{orders.map((order) => { const orderPayments = payments.filter((payment) => payment.orderId === order.id); const paid = orderPayments.reduce((sum, payment) => sum + Number(payment.amount), 0); return <tr key={order.id}><td className="strong-cell">{order.id}</td><td>{order.customer}</td><td>{money(order.total)}</td><td>{money(paid)}</td><td className={paid < order.total ? 'balance-due' : 'balance-paid'}>{money(Math.max(0, order.total - paid))}</td><td>{orderPayments.length} / 2</td><td><Status value={paid >= order.total ? 'Paid' : paid ? 'Partial' : 'Unpaid'} /></td></tr>; })}</tbody></table></div> : <EmptyState title="No order balances yet" detail="Create an order to start tracking deposits and final payments." />}</section>
+function PaymentsPage({ orders, payments, products, batches, onRecordPayment }) {
+  return <><section className="payment-summary-grid"><SummaryTile label="Payments collected" value={money(payments.reduce((sum, payment) => sum + Number(payment.amount), 0))} note={`${payments.length} receipts recorded`} /><SummaryTile label="Still to collect" value={money(orders.filter((order) => order.status !== 'Cancelled').reduce((sum, order) => sum + Math.max(0, order.total - payments.filter((payment) => payment.orderId === order.id).reduce((paid, payment) => paid + Number(payment.amount), 0)), 0))} note="Across all open balances" /></section>
+    <section className="panel data-panel"><div className="panel-heading"><div><h3>Order balances</h3><p>Up to two GCash or cash receipts per order. Produce and reserve all order items before the first payment.</p></div></div>{orders.length ? <div className="table-scroll"><table><thead><tr><th>ORDER</th><th>CUSTOMER</th><th>ORDER TOTAL</th><th>PAID</th><th>BALANCE</th><th>RECEIPTS</th><th>ACTION</th></tr></thead><tbody>{orders.map((order) => { const orderPayments = payments.filter((payment) => payment.orderId === order.id); const paid = orderPayments.reduce((sum, payment) => sum + Number(payment.amount), 0); const isPaid = paid >= order.total; const shortage = orderStockShortage(order, products, batches, orders); return <tr key={order.id}><td className="strong-cell">{order.id}</td><td>{order.customer}</td><td>{money(order.total)}</td><td>{money(paid)}</td><td className={paid < order.total ? 'balance-due' : 'balance-paid'}>{money(Math.max(0, order.total - paid))}</td><td>{orderPayments.length} / 2</td><td>{order.status === 'Cancelled' ? <button className="button payment-row-action payment-cancelled-action" type="button" disabled>Cancelled</button> : isPaid ? <button className="button payment-row-action payment-paid-action" type="button" disabled>Paid</button> : orderPayments.length >= 2 ? <span className="status-badge status-partial">Limit reached</span> : shortage ? <button className="button payment-row-action payment-stock-action" type="button" disabled title={`Need ${shortage.required} ${shortage.product}; ${shortage.available} available`}>Produce first</button> : <button className="button button-primary payment-row-action" type="button" onClick={() => onRecordPayment(order)}>Record payment</button>}</td></tr>; })}</tbody></table></div> : <EmptyState title="No order balances yet" detail="Create an order to start tracking deposits and final payments." />}</section>
     <section className="panel data-panel"><div className="panel-heading"><div><h3>Payment receipts</h3><p>Manual cash and GCash records.</p></div></div>{payments.length ? <div className="table-scroll"><table><thead><tr><th>RECEIPT</th><th>ORDER</th><th>METHOD</th><th>AMOUNT</th><th>REFERENCE</th><th>PAID AT</th></tr></thead><tbody>{payments.map((payment) => <tr key={payment.id}><td className="strong-cell">{payment.id}</td><td>{payment.orderId}</td><td>{payment.method}</td><td>{money(payment.amount)}</td><td>{payment.reference || '—'}</td><td>{new Date(payment.paidAt).toLocaleString('en-PH')}</td></tr>)}</tbody></table></div> : <EmptyState title="No receipts recorded yet" detail="Customer payments are added here by an owner." />}</section>
   </>;
 }
@@ -681,19 +832,19 @@ function EmptyState({ title, detail, action, onClick }) {
   return <div className="empty-state"><span className="empty-flower">✿</span><h4>{title}</h4><p>{detail}</p>{action && <button className="button button-secondary" onClick={onClick}>{action}</button>}</div>;
 }
 
-function Modal({ type, data, selectedOrder, selectedCustomer, selectedMaterial, onClose, onSave }) {
+function Modal({ type, data, selectedOrder, selectedCustomer, selectedMaterial, selectedProduct, onClose, onSave }) {
   const [error, setError] = useState('');
   const [form, setForm] = useState(() => {
     const firstProduct = data.products[0];
-    const activeOrders = data.orders.filter((order) => !['Delivered', 'Cancelled'].includes(order.status));
+    const paymentOrders = data.orders.filter((order) => order.status !== 'Cancelled' && order.total > data.payments.filter((payment) => payment.orderId === order.id).reduce((sum, payment) => sum + Number(payment.amount), 0) && data.payments.filter((payment) => payment.orderId === order.id).length < 2 && !orderStockShortage(order, data.products, data.batches, data.orders));
     const defaults = {
       customer: { name: selectedCustomer?.name || '', phone: selectedCustomer?.phone || '', email: selectedCustomer?.email || '', address: selectedCustomer?.address || '', notes: selectedCustomer?.notes || '' },
       product: { name: '', type: 'Candle', price: '' },
       material: { name: selectedMaterial?.name || '', unit: selectedMaterial?.unit || '', price: selectedMaterial?.price ?? '', threshold: selectedMaterial?.threshold ?? '', active: selectedMaterial?.active ?? true },
       order: { customerId: selectedOrder?.customerId || data.customers[0]?.id || '', items: selectedOrder?.items.map((item, index) => ({ ...item, id: item.id || `${selectedOrder.id}-item-${index + 1}`, quantity: String(item.quantity), price: String(item.price) })) || [{ productId: firstProduct?.id || '', quantity: '1', price: firstProduct?.price || '' }], date: selectedOrder?.date || today, dueDate: selectedOrder?.dueDate || '', shipping: String(selectedOrder?.shipping || 0) },
       stock: { materialId: data.materials[0]?.id || '', action: 'Restock', quantity: '', reason: '' },
-      production: { itemId: activeOrders.flatMap((order) => order.items.map((item) => ({ item }))).find(({ item }) => Number(item.quantity) > data.batches.filter((batch) => batch.itemId === item.id).reduce((sum, batch) => sum + Number(batch.quantity), 0))?.item.id || '', quantity: '1' },
-      payment: { orderId: data.orders.find((order) => data.payments.filter((payment) => payment.orderId === order.id).length < 2 && order.total > data.payments.filter((payment) => payment.orderId === order.id).reduce((sum, payment) => sum + Number(payment.amount), 0))?.id || '', method: 'GCash', amount: '', reference: '' },
+      production: { productId: selectedProduct?.id || firstProduct?.id || '', quantity: '1' },
+      payment: { orderId: selectedOrder?.id || paymentOrders[0]?.id || '', method: 'GCash', amount: '', reference: '' },
       expense: { category: 'Materials', description: '', amount: '', date: today, method: 'Cash', receipt: '' },
     };
     return defaults[type] || {};
@@ -721,14 +872,16 @@ function Modal({ type, data, selectedOrder, selectedCustomer, selectedMaterial, 
   const removeLine = (index) => setForm((current) => ({ ...current, items: current.items.filter((_, position) => position !== index) }));
   const payOrder = data.orders.find((order) => order.id === form.orderId);
   const paymentTotal = data.payments.filter((payment) => payment.orderId === form.orderId).reduce((sum, payment) => sum + Number(payment.amount), 0);
-  const activeOrders = data.orders.filter((order) => !['Delivered', 'Cancelled'].includes(order.status));
-  const productionItems = activeOrders.flatMap((order) => order.items.map((item) => {
-    const produced = data.batches.filter((batch) => batch.itemId === item.id).reduce((sum, batch) => sum + Number(batch.quantity), 0);
-    return { order, item, remaining: item.quantity - produced };
-  })).filter(({ remaining }) => remaining > 0);
-  const selectedProductionItem = productionItems.find(({ item }) => item.id === form.itemId);
+  const paymentOrders = data.orders.filter((order) => order.status !== 'Cancelled' && order.total > data.payments.filter((payment) => payment.orderId === order.id).reduce((sum, payment) => sum + Number(payment.amount), 0) && data.payments.filter((payment) => payment.orderId === order.id).length < 2 && !orderStockShortage(order, data.products, data.batches, data.orders));
+  const selectedProductionProduct = data.products.find((product) => product.id === form.productId);
+  const productionQuantity = Number(form.quantity);
+  const productionDeductions = selectedProductionProduct?.recipe.map((use) => {
+    const material = data.materials.find((entry) => entry.name === use.material && entry.active);
+    return { material, needed: Number(use.quantity) * productionQuantity };
+  }) || [];
+  const productionShortage = productionDeductions.find(({ material, needed }) => !material || material.stock < needed);
   const orderItemTotal = (form.items || []).reduce((sum, item) => sum + Number(item.quantity || 0) * Number(item.price || 0), 0);
-  const title = { customer: selectedCustomer ? 'Update customer profile' : 'Add a customer', product: 'Add a product', material: selectedMaterial ? 'Edit material' : 'Add a material', order: selectedOrder ? 'Update order' : 'Create an order', stock: 'Update material stock', production: 'Record a production batch', payment: 'Record a payment', expense: 'Add an expense', slip: 'Order slip' }[type];
+  const title = { customer: selectedCustomer ? 'Update customer profile' : 'Add a customer', product: 'Add a product', material: selectedMaterial ? 'Edit material' : 'Add a material', order: selectedOrder ? 'Update order' : 'Create an order', stock: 'Update material stock', production: 'Create finished products', payment: 'Record a payment', expense: 'Add an expense', slip: 'Order slip' }[type];
   if (type === 'slip' && selectedOrder) return <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}><section className="modal-card slip-card"><button className="modal-close" onClick={onClose} aria-label="Close">×</button><div className="slip-brand"><span className="brand-mark">s<span>.</span></span><span><strong>simula studio</strong><small>HANDMADE WITH HEART</small></span></div><p className="eyebrow">ORDER SLIP · {selectedOrder.id}</p><h2>{selectedOrder.customer}</h2><p>Order date {dateLabel(selectedOrder.date)} · Due {dateLabel(selectedOrder.dueDate)}</p><div className="slip-items">{selectedOrder.items.map((item) => <div key={item.productId}><span>{item.quantity} × {item.name}</span><strong>{money(item.quantity * item.price)}</strong></div>)}</div><div className="slip-items"><div><span>Shipping</span><strong>{money(selectedOrder.shipping)}</strong></div></div><div className="slip-total"><span>Total due</span><strong>{money(selectedOrder.total)}</strong></div><p className="slip-thanks">Thank you for supporting our little studio ✿</p><button className="button button-primary modal-submit" onClick={() => onSave({})}><Icon name="print" /> Print order slip</button></section></div>;
   return <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div className="modal-header"><div><p className="eyebrow">SIMULA STUDIO</p><h2 id="modal-title">{title}</h2></div><button className="modal-close" onClick={onClose} aria-label="Close">×</button></div>
     {error && <div className="form-error" role="alert">{error}</div>}
@@ -737,10 +890,10 @@ function Modal({ type, data, selectedOrder, selectedCustomer, selectedMaterial, 
     {type === 'material' && <div className="form-grid"><Field label="Material name" required><input autoFocus maxLength="150" value={form.name} onChange={(e) => set('name', e.target.value)} placeholder="e.g. Candle jar" /></Field><Field label="Unit" required><input maxLength="30" value={form.unit} onChange={(e) => set('unit', e.target.value)} placeholder="kg, pc, sheet…" /></Field><Field label="Unit price (₱)" required><input type="number" min="0" step="0.01" value={form.price} onChange={(e) => set('price', e.target.value)} /></Field><Field label="Low-stock threshold" required><input type="number" min="0" step="0.001" value={form.threshold} onChange={(e) => set('threshold', e.target.value)} /></Field><label className="material-active wide"><input type="checkbox" checked={form.active} onChange={(e) => set('active', e.target.checked)} /><span>Active material · include in recipes and stock alerts</span></label>{!selectedMaterial && <p className="form-hint wide">New materials start at zero on hand. Use “Update stock” to record the first restock.</p>}</div>}
     {type === 'order' && <div className="form-grid">{!data.customers.length && <p className="form-hint wide">Add a customer profile first to create an order.</p>}<Field label="Customer" required><select value={form.customerId} onChange={(e) => set('customerId', e.target.value)}><option value="">Choose customer</option>{data.customers.map((c) => <option value={c.id} key={c.id}>{c.name}</option>)}</select></Field><div className="order-lines wide"><div className="order-lines-header"><span>Order items</span><button type="button" className="text-link" onClick={addLine}>+ Add item</button></div>{form.items.map((item, index) => <div className="order-line" key={item.id || `new-${index}`}><select aria-label="Product variant" value={item.productId} onChange={(e) => setLine(index, 'productId', e.target.value)}>{data.products.map((product) => <option value={product.id} key={product.id}>{product.name} · {product.type}</option>)}</select><input aria-label="Item quantity" type="number" min="1" step="1" value={item.quantity} onChange={(e) => setLine(index, 'quantity', e.target.value)} /><input aria-label="Unit price in pesos" type="number" min="0.01" step="0.01" value={item.price} onChange={(e) => setLine(index, 'price', e.target.value)} /><button type="button" className="remove-line" aria-label="Remove item" onClick={() => removeLine(index)}>×</button></div>)}</div><Field label="Order date"><input type="date" value={form.date} onChange={(e) => set('date', e.target.value)} /></Field><Field label="Due date"><input type="date" value={form.dueDate} onChange={(e) => set('dueDate', e.target.value)} /></Field><Field label="Shipping fee (₱) · excluded from reports"><input type="number" min="0" step="0.01" value={form.shipping} onChange={(e) => set('shipping', e.target.value)} /></Field><div className="order-total-preview"><span>Order total</span><strong>{money(orderItemTotal + Number(form.shipping || 0))}</strong></div></div>}
     {type === 'stock' && <div className="form-grid"><Field label="Material" required><select value={form.materialId} onChange={(e) => set('materialId', e.target.value)}>{data.materials.map((m) => <option value={m.id} key={m.id}>{m.name} · {m.stock} {m.unit} on hand</option>)}</select></Field><Field label="Stock action"><select value={form.action} onChange={(e) => set('action', e.target.value)}><option>Restock</option><option>Remove</option><option>Set balance</option></select></Field><Field label={`Quantity (${data.materials.find((m) => m.id === form.materialId)?.unit || 'units'})`} required><input type="number" min={form.action === 'Set balance' ? '0' : '0.001'} step="0.001" value={form.quantity} onChange={(e) => set('quantity', e.target.value)} /></Field><Field label="Reason"><input value={form.reason} onChange={(e) => set('reason', e.target.value)} placeholder="Supplier delivery, count correction..." /></Field></div>}
-    {type === 'production' && <div className="form-grid"><Field label="Order item" required wide><select value={form.itemId} onChange={(e) => set('itemId', e.target.value)}><option value="">Choose an order item</option>{productionItems.map(({ order, item, remaining }) => <option value={item.id} key={item.id}>{order.id} · {order.customer} · {item.name} · {remaining} remaining</option>)}</select></Field><Field label="Quantity to produce" required><input type="number" min="1" step="1" max={selectedProductionItem?.remaining || ''} value={form.quantity} onChange={(e) => set('quantity', e.target.value)} /></Field><div className="production-check"><span>✦</span>All recipe materials are checked together before any stock changes.</div></div>}
-    {type === 'payment' && <div className="form-grid"><Field label="Order" required wide><select value={form.orderId} onChange={(e) => set('orderId', e.target.value)}><option value="">Choose an order</option>{data.orders.filter((order) => order.total > data.payments.filter((p) => p.orderId === order.id).reduce((sum, p) => sum + Number(p.amount), 0)).map((order) => { const count = data.payments.filter((p) => p.orderId === order.id).length; const paid = data.payments.filter((p) => p.orderId === order.id).reduce((sum, p) => sum + Number(p.amount), 0); return <option value={order.id} key={order.id}>{order.id} · {order.customer} · {money(order.total - paid)} due · {count}/2 receipts</option>; })}</select></Field><Field label="Amount (₱)" required><input type="number" min="0.01" max={payOrder ? payOrder.total - paymentTotal : ''} step="0.01" value={form.amount} onChange={(e) => set('amount', e.target.value)} placeholder="0.00" /></Field><Field label="Payment method"><select value={form.method} onChange={(e) => set('method', e.target.value)}><option>GCash</option><option>Cash</option></select></Field><Field label="Reference number (optional)" wide><input value={form.reference} onChange={(e) => set('reference', e.target.value)} placeholder="GCash reference or receipt note" /></Field>{payOrder && <div className="payment-preview wide"><span>Order total <strong>{money(payOrder.total)}</strong></span><span>Paid so far <strong>{money(paymentTotal)}</strong></span><span>Remaining <strong>{money(payOrder.total - paymentTotal)}</strong></span><span>Receipts <strong>{data.payments.filter((p) => p.orderId === form.orderId).length} / 2 maximum</strong></span></div>}</div>}
+    {type === 'production' && <div className="form-grid"><Field label="Product to make" required wide><select value={form.productId} onChange={(e) => set('productId', e.target.value)}>{data.products.map((product) => <option value={product.id} key={product.id}>{product.name} · {product.type}</option>)}</select></Field><Field label="Quantity to make" required><input autoFocus type="number" min="1" step="1" value={form.quantity} onChange={(e) => set('quantity', e.target.value)} /></Field><div className="production-check"><span>✦</span>Required materials are checked together before inventory is changed.</div>{productionShortage && Number.isInteger(productionQuantity) && productionQuantity > 0 && <div className="form-error wide">Not enough {productionShortage.material?.name || 'active material'} for this batch. Needed {productionShortage.needed.toFixed(3)} {productionShortage.material?.unit || ''}; available {productionShortage.material?.stock ?? 0} {productionShortage.material?.unit || ''}. No stock will be changed.</div>}</div>}
+    {type === 'payment' && <div className="form-grid">{!paymentOrders.length && <p className="form-hint wide">No order is ready for payment. Produce and reserve all finished products for an order first.</p>}<Field label="Order" required wide><select value={form.orderId} onChange={(e) => set('orderId', e.target.value)}><option value="">Choose an order</option>{paymentOrders.map((order) => { const count = data.payments.filter((p) => p.orderId === order.id).length; const paid = data.payments.filter((p) => p.orderId === order.id).reduce((sum, p) => sum + Number(p.amount), 0); return <option value={order.id} key={order.id}>{order.id} · {order.customer} · {money(order.total - paid)} due · {count}/2 receipts</option>; })}</select></Field><Field label="Amount (₱)" required><input type="number" min="0.01" max={payOrder ? payOrder.total - paymentTotal : ''} step="0.01" value={form.amount} onChange={(e) => set('amount', e.target.value)} placeholder="0.00" /></Field><Field label="Payment method"><select value={form.method} onChange={(e) => set('method', e.target.value)}><option>GCash</option><option>Cash</option></select></Field><Field label="Reference number (optional)" wide><input value={form.reference} onChange={(e) => set('reference', e.target.value)} placeholder="GCash reference or receipt note" /></Field>{payOrder && <div className="payment-preview wide"><span>Order total <strong>{money(payOrder.total)}</strong></span><span>Paid so far <strong>{money(paymentTotal)}</strong></span><span>Remaining <strong>{money(payOrder.total - paymentTotal)}</strong></span><span>Receipts <strong>{data.payments.filter((p) => p.orderId === form.orderId).length} / 2 maximum</strong></span></div>}</div>}
     {type === 'expense' && <div className="form-grid"><Field label="Category"><select value={form.category} onChange={(e) => set('category', e.target.value)}>{['Materials', 'Packaging', 'Delivery', 'Marketing', 'Utilities', 'Equipment', 'Other'].map((category) => <option key={category}>{category}</option>)}</select></Field><Field label="Amount (₱)" required><input type="number" min="0.01" step="0.01" value={form.amount} onChange={(e) => set('amount', e.target.value)} placeholder="0.00" /></Field><Field label="Description" required wide><input value={form.description} onChange={(e) => set('description', e.target.value)} placeholder="What was the expense for?" /></Field><Field label="Expense date"><input type="date" value={form.date} onChange={(e) => set('date', e.target.value)} /></Field><Field label="Payment method"><select value={form.method} onChange={(e) => set('method', e.target.value)}><option>Cash</option><option>GCash</option><option>Bank transfer</option><option>Other</option></select></Field><Field label="Receipt link (optional)" wide><input type="url" value={form.receipt} onChange={(e) => set('receipt', e.target.value)} placeholder="https://..." /></Field></div>}
-    <div className="modal-actions"><button className="button button-secondary" onClick={onClose}>Cancel</button><button className="button button-primary" onClick={() => { const validationError = onSave(form); if (validationError) setError(validationError); }}><Icon name="check" /> Save {type === 'customer' ? 'customer' : type === 'order' ? 'order' : type === 'payment' ? 'payment' : type === 'expense' ? 'expense' : type === 'stock' ? 'stock update' : type === 'material' ? 'material' : type === 'production' ? 'batch' : 'product'}</button></div>
+    <div className="modal-actions"><button className="button button-secondary" onClick={onClose}>Cancel</button><button className="button button-primary" onClick={() => { const validationError = onSave(form); if (validationError) setError(validationError); }}><Icon name="check" /> {type === 'production' ? 'Create products' : `Save ${type === 'customer' ? 'customer' : type === 'order' ? 'order' : type === 'payment' ? 'payment' : type === 'expense' ? 'expense' : type === 'stock' ? 'stock update' : type === 'material' ? 'material' : 'product'}`}</button></div>
   </section></div>;
 }
 

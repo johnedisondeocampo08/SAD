@@ -34,7 +34,7 @@ function isValidWorkspace(state, previous = null) {
   }))) return false;
   if (state.materials.some((material) => !Number.isFinite(Number(material.stock)) || Number(material.stock) < 0 || !Number.isFinite(Number(material.threshold)) || Number(material.threshold) < 0)) return false;
   if (state.orders.some((order) => {
-    if (!customerIds.has(order.customerId) || !hasValidDate(order.date) || (order.dueDate && (!hasValidDate(order.dueDate) || order.dueDate < order.date)) || !['Pending', 'In production', 'Ready', 'Paid', 'Delivered', 'Cancelled'].includes(order.status) || !Array.isArray(order.items) || !order.items.length || !Number.isFinite(Number(order.shipping || 0)) || Number(order.shipping || 0) < 0 || !Number.isFinite(Number(order.total)) || Number(order.total) < 0) return true;
+    if (!customerIds.has(order.customerId) || !hasValidDate(order.date) || (order.dueDate && (!hasValidDate(order.dueDate) || order.dueDate < order.date)) || !['Pending', 'In production', 'Ready', 'Paid', 'Delivered', 'Cancelled'].includes(order.status) || (order.stockReserved !== undefined && typeof order.stockReserved !== 'boolean') || !Array.isArray(order.items) || !order.items.length || !Number.isFinite(Number(order.shipping || 0)) || Number(order.shipping || 0) < 0 || !Number.isFinite(Number(order.total)) || Number(order.total) < 0) return true;
     if (order.items.some((item) => !productIds.has(item.productId) || item.type !== productsById.get(item.productId)?.type || !Number.isInteger(Number(item.quantity)) || Number(item.quantity) < 1 || !Number.isFinite(Number(item.price)) || Number(item.price) < 0 || !['Candle', 'Souvenir'].includes(item.type))) return true;
     const itemTotal = order.items.reduce((sum, item) => sum + Number(item.quantity) * Number(item.price), 0);
     return Math.abs(Number(order.total) - itemTotal - Number(order.shipping || 0)) > 0.01;
@@ -55,6 +55,34 @@ function isValidWorkspace(state, previous = null) {
     const order = orders.get(orderId);
     if (!order || count > 2 || paymentTotals.get(orderId) > Number(order.total) + 0.001) return false;
   }
+  if (previous) {
+    const previousOrders = new Map((previous.orders || []).map((order) => [order.id, order]));
+    const previousPayments = new Set((previous.payments || []).map((payment) => payment.id));
+    const newPaymentOrderIds = new Set(state.payments.filter((payment) => !previousPayments.has(payment.id)).map((payment) => payment.orderId));
+    for (const order of state.orders) {
+      const oldOrder = previousOrders.get(order.id);
+      const paid = paymentTotals.get(order.id) || 0;
+      const fullyPaid = paid >= Number(order.total);
+      if (oldOrder?.stockReserved && !order.stockReserved) return false;
+      if (newPaymentOrderIds.has(order.id) && !oldOrder?.stockReserved && !order.stockReserved) return false;
+      if (order.stockReserved && !oldOrder?.stockReserved && !newPaymentOrderIds.has(order.id) && !fullyPaid) return false;
+      if (order.status === 'Cancelled') {
+        const previouslyPaid = oldOrder && (previous.payments || [])
+          .filter((payment) => payment.orderId === order.id)
+          .reduce((sum, payment) => sum + Number(payment.amount), 0) >= Number(oldOrder.total);
+        if (!oldOrder && paid > 0) return false;
+        if (oldOrder && oldOrder.status !== 'Cancelled' && (oldOrder.status === 'Delivered' || previouslyPaid)) return false;
+      } else if (order.status === 'Delivered') {
+        if ((!oldOrder || !['In production', 'Delivered'].includes(oldOrder.status)) || !fullyPaid || (oldOrder.status !== 'Delivered' && !order.stockReserved)) return false;
+      } else {
+        if (['Cancelled', 'Delivered'].includes(oldOrder?.status)) return false;
+        if (order.status !== (fullyPaid ? 'In production' : 'Pending')) return false;
+      }
+    }
+    for (const payment of state.payments) {
+      if (orders.get(payment.orderId)?.status === 'Cancelled' && !previousPayments.has(payment.id)) return false;
+    }
+  }
 
   const previousBatches = previous?.batches || [];
   const batchIds = new Set(state.batches.map((batch) => batch.id));
@@ -62,7 +90,7 @@ function isValidWorkspace(state, previous = null) {
   const previousBatchesById = new Map(previousBatches.map((batch) => [batch.id, batch]));
   for (const batch of state.batches) {
     const oldBatch = previousBatchesById.get(batch.id);
-    if (oldBatch && ['orderId', 'itemId', 'quantity', 'date', 'product'].some((key) => oldBatch[key] !== batch[key])) return false;
+    if (oldBatch && ['orderId', 'itemId', 'productId', 'quantity', 'date', 'product'].some((key) => oldBatch[key] !== batch[key])) return false;
   }
   const previousMovements = previous?.movements || [];
   const movementsById = new Map(state.movements.map((movement) => [movement.id, movement]));
@@ -74,6 +102,10 @@ function isValidWorkspace(state, previous = null) {
 
   const producedByItem = new Map();
   for (const batch of state.batches) {
+    if (batch.productId) {
+      if (!productIds.has(batch.productId) || batch.itemId || batch.orderId) return false;
+      continue;
+    }
     const order = state.orders.find((entry) => entry.id === batch.orderId);
     const item = order?.items.find((entry) => entry.id === batch.itemId);
     if (!order || !item || !state.products.some((product) => product.id === item.productId)) return false;
@@ -89,12 +121,19 @@ function isValidWorkspace(state, previous = null) {
   const oldBatchIds = new Set(previous ? previousBatches.map((batch) => batch.id) : state.batches.map((batch) => batch.id));
   const newBatches = state.batches.filter((batch) => !oldBatchIds.has(batch.id));
   for (const batch of newBatches) {
-    const order = state.orders.find((entry) => entry.id === batch.orderId);
+    const order = batch.itemId ? state.orders.find((entry) => entry.id === batch.orderId) : null;
     const item = order?.items.find((entry) => entry.id === batch.itemId);
-    const product = state.products.find((entry) => entry.id === item?.productId);
-    if (!order || !item || !product || !Array.isArray(product.recipe) || !product.recipe.length) return false;
-    const alreadyProduced = state.batches.filter((entry) => entry.itemId === item.id && entry.id !== batch.id).reduce((sum, entry) => sum + Number(entry.quantity), 0);
-    if (alreadyProduced + Number(batch.quantity) > Number(item.quantity)) return false;
+    const product = batch.productId
+      ? state.products.find((entry) => entry.id === batch.productId)
+      : state.products.find((entry) => entry.id === item?.productId);
+    if (!product || !Array.isArray(product.recipe) || !product.recipe.length) return false;
+    if (batch.itemId) {
+      if (!order || !item) return false;
+      const alreadyProduced = state.batches.filter((entry) => entry.itemId === item.id && entry.id !== batch.id).reduce((sum, entry) => sum + Number(entry.quantity), 0);
+      if (alreadyProduced + Number(batch.quantity) > Number(item.quantity)) return false;
+    } else if (!batch.productId) {
+      return false;
+    }
 
     const expected = new Map();
     for (const use of product.recipe) {
@@ -116,6 +155,21 @@ function isValidWorkspace(state, previous = null) {
     for (const [material, quantity] of expected) {
       if (Math.abs(quantity - (actual.get(material) || 0)) > 0.0005) return false;
     }
+  }
+
+  const finishedStock = new Map();
+  for (const batch of state.batches.filter((entry) => entry.productId)) {
+    finishedStock.set(batch.productId, (finishedStock.get(batch.productId) || 0) + Number(batch.quantity));
+  }
+  const reservedStock = new Map();
+  for (const order of state.orders.filter((entry) => entry.stockReserved)) {
+    if (!(paymentCounts.get(order.id) > 0)) return false;
+    for (const item of order.items) {
+      reservedStock.set(item.productId, (reservedStock.get(item.productId) || 0) + Number(item.quantity));
+    }
+  }
+  for (const [productId, reserved] of reservedStock) {
+    if (reserved > (finishedStock.get(productId) || 0)) return false;
   }
 
   const previousMaterials = new Map((previous?.materials || []).map((material) => [material.id, material]));

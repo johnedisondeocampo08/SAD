@@ -130,12 +130,13 @@ async function persistWorkspace(connection, state, previous, currentOwnerId) {
   for (const batch of state.batches) {
     await connection.query(
       `INSERT INTO production_batch
-        (batch_id, item_id, quantity_produced, produced_at, created_by_owner_id)
-       VALUES (?, ?, ?, ?, ?)
+        (batch_id, item_id, variant_id, quantity_produced, produced_at, created_by_owner_id)
+       VALUES (?, ?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE
-        item_id = VALUES(item_id), quantity_produced = VALUES(quantity_produced),
+        item_id = VALUES(item_id), variant_id = VALUES(variant_id),
+        quantity_produced = VALUES(quantity_produced),
         produced_at = VALUES(produced_at)`,
-      [batch.id, batch.itemId, Number(batch.quantity), timestampValue(batch.date), ownerFor(batch, currentOwnerId)]
+      [batch.id, batch.itemId || null, batch.productId || null, Number(batch.quantity), timestampValue(batch.date), ownerFor(batch, currentOwnerId)]
     );
     const batchPrefix = `Production ${batch.id} `;
     const batchMovements = state.movements.filter((movement) => movement.reason?.startsWith(batchPrefix) && Number(movement.change) < 0);

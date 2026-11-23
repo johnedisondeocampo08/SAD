@@ -778,7 +778,7 @@ function WorkspaceApp({ owner, onSignOut }) {
         </header>
         <div className="content-wrap">
           <div className="page-heading">
-            <div><p className="eyebrow">{active === 'Overview' ? 'YOUR LITTLE BUSINESS, AT A GLANCE' : 'SIMULA STUDIO  /  MANAGEMENT'}</p><h1>{pageTitle}</h1><p className="page-subtitle">{pageSubtitle(active)}</p></div>
+            <div><p className="eyebrow">{active === 'Overview' ? '' : 'SIMULA STUDIO  /  MANAGEMENT'}</p><h1>{pageTitle}</h1><p className="page-subtitle">{pageSubtitle(active)}</p></div>
             {active === 'Overview' && <button className="button button-primary" onClick={() => setModal('order')}><Icon name="plus" /> New order</button>}
             {active === 'Orders' && <div className="orders-header-actions"><button className="button button-secondary booking-requests-toggle" type="button" onClick={() => setOrdersView((view) => view === 'bookings' ? 'orders' : 'bookings')}><span>Booking requests</span>{pendingBookingCount > 0 && <span className="booking-count-badge">{pendingBookingCount}</span>}</button><button className="button button-primary" onClick={() => setModal('order')}><Icon name="plus" /> Create order</button></div>}
             {active === 'Customers' && <button className="button button-primary" onClick={() => setModal('customer')}><Icon name="plus" /> Add customer</button>}
